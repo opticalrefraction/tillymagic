@@ -1,4 +1,4 @@
-# Tillymagic (macOS/Unix)
+# Tillymagic (macOS)
 _old-school combat games turned modern!_
 
 to play, run:
