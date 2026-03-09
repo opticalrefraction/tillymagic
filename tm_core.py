@@ -1,4 +1,4 @@
-#!/usr/bin/env python3
+# !/usr/bin/env python3
 """TillyMagic - core constants, terminal helpers, input handler."""
 import sys, os, time, math, random, subprocess, json
 from collections import deque
@@ -7,7 +7,7 @@ try:
 except ImportError:
     print("Requires Unix/macOS terminal."); sys.exit(1)
 
-# ── Terminal size ──────────────────────────────────────────────────────────────
+# terminal size
 def get_term_size():
     import shutil
     s = shutil.get_terminal_size((120, 35))
@@ -16,7 +16,7 @@ def get_term_size():
 TERM_W, TERM_H = get_term_size()
 BASE_MAP_W, BASE_MAP_H = 80, 22
 
-# ── ANSI ───────────────────────────────────────────────────────────────────────
+# ansi
 def fg(r,g,b):   return f"\033[38;2;{r};{g};{b}m"
 def bg(r,g,b):   return f"\033[48;2;{r};{g};{b}m"
 def at(x,y):     return f"\033[{y+1};{x+1}H"
@@ -35,7 +35,7 @@ SND_HIT   = "/System/Library/Components/CoreAudio.component/Contents/SharedSuppo
 SND_FINAL = "/System/Library/Components/CoreAudio.component/Contents/SharedSupport/SystemSounds/system/head_gestures_partial_nod.caf"
 SND_ULT   = "/System/Library/PrivateFrameworks/ToneLibrary.framework/Versions/A/Resources/AlertTones/EncoreInfinitum/Welcome-EncoreInfinitum.caf"
 
-# ── Input ──────────────────────────────────────────────────────────────────────
+# input
 class Input:
     def __init__(self):
         self.fd = sys.stdin.fileno()
@@ -55,7 +55,7 @@ class Input:
             i = 0
             while i < len(data):
                 b = data[i]
-                # ESC sequence: read ahead for [ + letter
+                # esc sequence: read ahead for [ + letter
                 if b == 0x1b and i+2 < len(data) and data[i+1] == ord('['):
                     code = chr(data[i+2])
                     seq = {'A':'UP','B':'DOWN','C':'RIGHT','D':'LEFT'}.get(code)
@@ -64,12 +64,12 @@ class Input:
                         i += 3
                         continue
                     else:
-                        # Unknown ESC seq, emit raw ESC
+                        # unknown esc seq, emit raw esc
                         self._buf.append('\x1b')
                         i += 1
                         continue
                 elif b == 0x1b:
-                    # Lone ESC with nothing following - real escape key
+                    # lone esc with nothing following - real escape key
                     self._buf.append('\x1b')
                     i += 1
                     continue
@@ -89,7 +89,7 @@ class Input:
         return out
 
     def get_single(self):
-        # Returns only freshly pressed keys - no held repeats. For menus.
+        # returns only freshly pressed keys - no held repeats. for menus.
         self._held.clear()
         pressed = list(self._buf); self._buf.clear()
         return pressed
@@ -97,13 +97,13 @@ class Input:
     def restore(self):
         termios.tcsetattr(self.fd, termios.TCSADRAIN, self.old)
 
-# ── Save/load ─────────────────────────────────────────────────────────────────
+# save/load
 SAVE_PATH = os.path.expanduser("~/.tillymagic_save.json")
 
 def load_save():
     default = {
         "coins": 0,
-        "class_levels": {"wizard":1,"gravedigger":1,"marionette":1,"cartographer":1,"revenant":1},
+        "class_levels": {"wizard":1,"gravedigger":1,"marionette":1,"cartographer":1,"revenant":1,"siphon":1},
         "class_stats": {}   # class -> {stat: bonus}
     }
     try:
@@ -118,13 +118,13 @@ def write_save(d):
         with open(SAVE_PATH,'w') as f: json.dump(d,f)
     except: pass
 
-# ── Class definitions ──────────────────────────────────────────────────────────
+# class definitions
 CLASS_DATA = {
     "wizard": {
         "color": (160,80,220),
         "hp": 100, "speed": 20.0, "dash_dist": 4,
         "move_names": {1:"Scepter",2:"Arcane Snap",3:"Gravemark",4:"Blink Scatter",5:"Wizard's Downfall"},
-        "move_cds":   {1:0.25, 2:10.0, 3:20.0, 4:8.0, 5:60.0},
+        "move_cds":   {1:0.35, 2:14.0, 3:26.0, 4:12.0, 5:60.0},
         "desc": ["A mobile arcane caster.",
                  "Combo projectiles, AOE stuns,",
                  "gravity traps and teleport bursts.",
@@ -134,7 +134,7 @@ CLASS_DATA = {
         "color": (140,100,50),
         "hp": 120, "speed": 15.0, "dash_dist": 4,
         "move_names": {1:"Shovel",2:"Dig",3:"Bury",4:"Exhume",5:"Six Feet Under"},
-        "move_cds":   {1:0.3, 2:5.0, 3:14.0, 4:10.0, 5:60.0},
+        "move_cds":   {1:0.5, 2:8.0, 3:18.0, 4:14.0, 5:60.0},
         "desc": ["A slow, methodical arena controller.",
                  "Lay mines, bury the boss, recall explosions.",
                  "Ultimate: Cracks the earth open beneath them."],
@@ -143,7 +143,7 @@ CLASS_DATA = {
         "color": (200,60,120),
         "hp": 90, "speed": 18.0, "dash_dist": 4,
         "move_names": {1:"Silk Strike",2:"Plant String",3:"Puppet Pull",4:"Redirect",5:"Cut All Strings"},
-        "move_cds":   {1:0.3, 2:6.0, 3:12.0, 4:8.0, 5:60.0},
+        "move_cds":   {1:0.4, 2:9.0, 3:16.0, 4:11.0, 5:60.0},
         "desc": ["A puppeteer who weaponizes the boss.",
                  "Plant strings to reflect damage,",
                  "control boss movement, summon puppets.",
@@ -153,7 +153,7 @@ CLASS_DATA = {
         "color": (60,180,140),
         "hp": 100, "speed": 22.0, "dash_dist": 5,
         "move_names": {1:"Ink Stab",2:"Flare",3:"Quicksand",4:"Terrain Wall",5:"Map Ignition"},
-        "move_cds":   {1:0.25, 2:8.0, 3:12.0, 4:15.0, 5:60.0},
+        "move_cds":   {1:0.35, 2:11.0, 3:16.0, 4:20.0, 5:60.0},
         "desc": ["A scholar who maps and traps the arena.",
                  "Charted tiles deal passive damage.",
                  "Blind, slow, and wall off the boss.",
@@ -163,15 +163,30 @@ CLASS_DATA = {
         "color": (200,30,30),
         "hp": 60, "speed": 17.0, "dash_dist": 4,
         "move_names": {1:"Death Blow",2:"Rage Strike",3:"Bone Shield",4:"Self-Destruct",5:"Berserk"},
-        "move_cds":   {1:0.28, 2:0.25, 3:10.0, 4:15.0, 5:60.0},
+        "move_cds":   {1:0.45, 2:0.38, 3:14.0, 4:20.0, 5:60.0},
         "desc": ["5 lives, 60 HP each. Gets stronger each death.",
                  "Rage builds damage with every respawn.",
                  "Final life unlocks burning movement trails.",
                  "Ultimate: Voluntary self-destruct for huge damage."],
     },
+    "siphon": {
+        "color": (80,200,180),
+        "hp": 95, "speed": 19.0, "dash_dist": 5,
+        # hijack: 3s cd. window opens, reflects next boss attack. no personal combo.
+        # overload: detonate all stored charges for burst damage.
+        # null field: zone that blocks boss buffs/speed boosts for 8s.
+        # leech: steal boss current speed/armor buff and apply to self.
+        # ult: siphon everything, emit all at once in a ring explosion.
+        "move_names": {1:"Hijack",2:"Overload",3:"Null Field",4:"Leech",5:"Void Surge"},
+        "move_cds":   {1:3.0, 2:12.0, 3:16.0, 4:10.0, 5:60.0},
+        "desc": ["A void mage who steals and reflects boss energy.",
+                 "Hijack opens a 1.5s window: reflects the next attack.",
+                 "Stores up to 3 charges. Overload detonates them all.",
+                 "Ultimate: Void Surge - unleash a ring of all stolen power."],
+    },
 }
 
-# ── Boss definitions ───────────────────────────────────────────────────────────
+# boss definitions
 BOSS_DATA = {
     "boss1": {
         "name": "The Warden",
@@ -209,9 +224,39 @@ BOSS_DATA = {
                  "Summons violin, drum, and horn turrets.",
                  "Crescendo phase: all turrets fire simultaneously."],
     },
+    "boss5": {
+        "name": "The Pale Architect",
+        "hp": 450, "damage": 22, "hit_cd": 2.2, "move_interval": 0.8,
+        "hit_range": 5, "coins": 300,
+        "color": (200,210,230),
+        "desc": ["Reshapes the arena every 12s with new wall segments.",
+                 "Phases through its own walls. You cannot.",
+                 "Schematic projectile builds a cage around you on landing.",
+                 "Phase 2: walls rotate, rubble tiles slow movement."],
+    },
+    "boss6": {
+        "name": "The Sovereign Hound",
+        "hp": 550, "damage": 28, "hit_cd": 1.6, "move_interval": 0.35,
+        "hit_range": 4, "coins": 400,
+        "color": (80,50,120),
+        "desc": ["Cycles Hunt (15s fast charges) and Rest (8s calm) phases.",
+                 "Rest: howls to summon shadow puppies. Ignore them.",
+                 "Telegraphs Pounce for 2s. Miss = 1.5s stun window.",
+                 "Immune to knockback. Cannot be repositioned."],
+    },
+    "boss7": {
+        "name": "The Liminal",
+        "hp": 700, "damage": 35, "hit_cd": 1.2, "move_interval": 0.25,
+        "hit_range": 8, "coins": 500,
+        "color": (200,100,255),
+        "desc": ["Two halves: light (left) and void (right). Damage one heals the other.",
+                 "Focus one half to make progress, then swap before recovery.",
+                 "Convergence beams from both sides meet in the middle.",
+                 "Below 40% HP: attempts a full Merge heal. Interrupt with 80 dmg."],
+    },
 }
 
-# ── Map definitions ────────────────────────────────────────────────────────────
+# map definitions
 MAP_DATA = {
     "standard": {
         "name": "Standard Arena",
@@ -246,15 +291,45 @@ MAP_DATA = {
         "name": "The Mirror Vault",
         "coin_mult": 2.5,
         "color": (200,220,255),
-        "procedural": False,   # mirror clone logic is fixed geometry
+        "procedural": False,
         "desc": ["High-contrast silver and white arena.",
                  "Boss has a mirrored clone on the far side.",
                  "Clone reforms 5s after being shattered.",
                  "2.5x coin multiplier. PROCEDURAL DISABLED."],
     },
+    "clocktower": {
+        "name": "The Shattered Clock",
+        "coin_mult": 1.8,
+        "color": (180,160,100),
+        "procedural": True,
+        "desc": ["Gear segments embedded in the floor block movement.",
+                 "A Clock Hand sweeps the full map every 20s (40 dmg).",
+                 "3s arc warning appears before each sweep.",
+                 "1.8x coin multiplier."],
+    },
+    "reliquary": {
+        "name": "The Sunken Reliquary",
+        "coin_mult": 2.2,
+        "color": (60,100,180),
+        "procedural": True,
+        "desc": ["Water rises every 45s. Full flood at 2:15.",
+                 "Water slows you 30%. Deep water makes you silent.",
+                 "6 chests scattered around. Boss can smash them too.",
+                 "2.2x coin multiplier."],
+    },
+    "spire": {
+        "name": "The Inverted Spire",
+        "coin_mult": 3.0,
+        "color": (120,60,200),
+        "procedural": True,
+        "desc": ["Arena wraps: exit left, appear on right. Same for top/bottom.",
+                 "Boss also wraps. Shortest path can cut through the seam.",
+                 "Spire Spikes erupt every 12s from random tiles (50 dmg).",
+                 "3.0x coin multiplier. Highest risk, highest reward."],
+    },
 }
 
-# ── Upgrade system ─────────────────────────────────────────────────────────────
+# upgrade system
 UPGRADE_STATS = ["strength","cooldown_reduction","speed","dash_range","absorbency","hit_range"]
 UPGRADE_DESCS = {
     "strength":           "+10% damage on all attacks",
