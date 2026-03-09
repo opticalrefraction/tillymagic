@@ -1,7 +1,7 @@
-"""TillyMagic menus."""
+"""tillymagic menus"""
 from tm_core import *
 
-# ── Drawing helpers ────────────────────────────────────────────────────────────
+# drawing helpers
 def clear_screen():
     sys.stdout.write(CLR+HIDE); sys.stdout.flush()
 
@@ -9,7 +9,7 @@ def write(s):
     sys.stdout.write(s); sys.stdout.flush()
 
 def box(x,y,w,h, color=(80,80,100), title=""):
-    """Draw a box with optional title."""
+    """draw a box with optional title"""
     out = ""
     clr = fg(*color)
     out += at(x,y) + clr + "╔" + "═"*(w-2) + "╗" + RST
@@ -28,7 +28,7 @@ def center_text(text, y, color=(200,200,200), bold=False):
     return at(x,y) + fg(*color) + b + text + RST
 
 def animated_title(now, y):
-    """Animated TillyMagic title with colour sweep."""
+    """animated tillymagic title"""
     title = "✦  T I L L Y M A G I C  ✦"
     tw,_ = get_term_size()
     cx = max(0,(tw-len(title))//2)
@@ -41,7 +41,7 @@ def animated_title(now, y):
     return out+RST
 
 def shimmer_bar(text, y, sel_color, unsel_color, selected):
-    """A menu item that glows when selected."""
+    """glowing menu item"""
     now = time.time()
     tw,_ = get_term_size()
     cx = max(0,(tw-len(text))//2)
@@ -57,7 +57,7 @@ def shimmer_bar(text, y, sel_color, unsel_color, selected):
     return out
 
 def draw_particles(particles, tw, th):
-    """Floating background particles (pure aesthetic)."""
+    """floating background particles"""
     out = ""
     for p in particles:
         px,py,char,clr,_ = p
@@ -79,7 +79,7 @@ def tick_particles(particles, dt, tw, th):
         p[1] = (p[1]+p[4][1]*dt) % (th-4)
         if p[1] < 2: p[1] = 2
 
-# ── Tips content ──────────────────────────────────────────────────────────────
+# tips content
 TIPS_TABS = ["Controls","Classes","Bosses","Maps","Upgrades","Tips"]
 TIPS_CONTENT = {
     "Controls": [
@@ -100,13 +100,12 @@ TIPS_CONTENT = {
         "  Bottom-left: move list. Selected move = red.",
         "  Cooldown moves show a countdown timer in grey.",
         "  When ultimate is ready (HP < 50%), move 5 glows",
-        "  with an animated orange sweep effect.",
         "  Top: player HP (left) and boss HP (right).",
     ],
     "Classes": [
         "─── Wizard ──────────────────────────────────────────",
         "  1: Scepter       5-hit ranged combo (range 6)",
-        "                   5th hit stuns. Purple projectiles.",
+        "                   5th hit stuns.",
         "  2: Arcane Snap   AOE ripple, stuns all (range 10)",
         "  3: Gravemark     Rune pulls boss (range 8, 30 dmg)",
         "  4: Blink Scatter Teleport + 3 exploding afterimages",
@@ -142,7 +141,7 @@ TIPS_CONTENT = {
         "     5 dmg per tile. Massive if you've moved lots.",
         "",
         "─── Revenant ────────────────────────────────────────",
-        "  Has 5 LIVES instead of a single HP bar.",
+        "  Has 5 lives instead of a single HP bar.",
         "  Each life = 60 HP. Gets +15% dmg per death.",
         "  Final life: leaves burning floor trails.",
         "  1: Death Blow   Heavy melee, 12 dmg (range 2)",
@@ -239,25 +238,25 @@ TIPS_CONTENT = {
         "  Chain Arcane Snap or Bury into damage moves.",
         "",
         "─── Class Tips ───────────────────────────────────────",
-        "  Wizard:       Stay at max range. Never let Scepter",
+        "  Wizard:       Stay at max range, and don't let Scepter",
         "                fall off — its 5-hit cycle is your DPS.",
         "  Gravedigger:  Pre-place mines before engaging.",
-        "                Bury → Exhume is your core combo.",
+        "                Bury to Exhume is your main combo.",
         "  Marionette:   Stack 3 strings before using Redirect",
         "                for triple-reflected damage.",
         "  Cartographer: Move constantly to chart tiles.",
         "                Save Ignition for dense fought areas.",
-        "  Revenant:     Don't fear death — it powers you up.",
+        "  Revenant:     Don't fear death it buffs you.",
         "                Use Self-Destruct strategically.",
         "",
         "─── Map Tips ─────────────────────────────────────────",
         "  Ossuary: Use pillars as body-blocks vs boss charges.",
-        "  Forge:   Pick a lane and own it. Don't lane-hop.",
-        "  Mirror:  Kill the clone first — it disrupts focus.",
+        "  Forge:   Pick a permanent lane, don't hop lanes.",
+        "  Mirror:  Kill the clone first, it disrupts focus.",
     ],
 }
 
-# ── Menu screens ──────────────────────────────────────────────────────────────
+# menu screens
 
 def menu_class_select(inp):
     classes = list(CLASS_DATA.keys())
@@ -431,7 +430,7 @@ def menu_map_select(inp):
 
 
 def menu_size_select(inp, map_key):
-    """Map size selection. Greyed out if map doesn't support procedural."""
+    """map size selection, greyed out if map doesn't support procedural"""
     md = MAP_DATA[map_key]
     proc = md["procedural"]
     sizes = [
@@ -489,7 +488,7 @@ def menu_size_select(inp, map_key):
                 txt = fg(140,140,140)+label+RST
             out += at(bx+3, row_start+i*4+1)+txt
 
-            # Size preview bar
+            # size preview bar
             if not greyed:
                 bar_w = int(26 * mult)
                 bar_clr = lerp((60,100,80),(100,220,160),(mult-1.0)/0.5)
@@ -531,7 +530,7 @@ def menu_tips(inp):
         out += animated_title(now, 1)
         out += center_text("── PLAYING TIPS ──", 3, (100,180,140))
 
-        # Tab bar
+        # tab bar
         tab_str = ""
         for i, tab in enumerate(TIPS_TABS):
             if i == tab_idx:
@@ -546,10 +545,10 @@ def menu_tips(inp):
         tab_x2 = max(0,(tw-actual_len)//2)
         out += at(tab_x2, 4)+tab_str
 
-        # Divider
+        # divider
         out += at(0, 5)+fg(60,60,70)+"─"*tw+RST
 
-        # Content
+        # content
         visible = content[scroll:scroll+(th-8)]
         for i,line in enumerate(visible):
             x = max(0,(tw-60)//2)
@@ -561,7 +560,7 @@ def menu_tips(inp):
                 clr=(160,160,160)
             out += at(x, 6+i)+fg(*clr)+line[:tw-x-1]+RST
 
-        # Scroll indicator
+        # scroll indicator
         if max_scroll > 0:
             pct = scroll/max_scroll
             out += at(tw-4, 6+int(pct*(th-10)))+fg(80,80,100)+"◈"+RST
@@ -572,7 +571,7 @@ def menu_tips(inp):
 
 
 def menu_store(inp, save):
-    """Upgrade store. Returns updated save."""
+    """upgrade store. returns updated save"""
     classes = list(CLASS_DATA.keys())
     cls_idx = 0
     particles = make_particles(20, *get_term_size())
@@ -623,7 +622,7 @@ def menu_store(inp, save):
         coin_str = f"✦ {coins} coins"
         out += center_text(coin_str, 4, (220,190,60))
 
-        # Class tabs
+        # class tabs
         actual_len = sum(len(c)+6 for c in classes)
         tab_x = max(0,(tw-actual_len)//2)
         out += at(tab_x, 5)
@@ -638,19 +637,19 @@ def menu_store(inp, save):
                 tab_str+=fg(70,70,80)+f"  {c} Lv{clv}  "+RST
         out+=tab_str
 
-        # Class info box
+        # class info box
         box_w=60; bx=(tw-box_w)//2
         out+=box(bx,7,box_w,5,lerp(cd["color"],(30,30,40),0.6))
         out+=at(bx+2,8)+fg(*cd["color"])+BOLD+cls.upper()+RST
         out+=at(bx+2,9)+fg(150,150,150)+" | ".join(cd["desc"][:2][:box_w//2])+RST
 
-        # Level bar
+        # level bar
         bar_filled = min(lvl,10)
         bar = "█"*bar_filled+"░"*(10-bar_filled)
         lv_clr = lerp((100,200,100),(255,100,50),(lvl-1)/9)
         out+=at(bx+2,10)+fg(*lv_clr)+f"Level {lvl}/10  "+fg(150,150,80)+bar+RST
 
-        # Existing stats
+        # existing stats
         cs = save.get("class_stats",{}).get(cls,{})
         stat_row=13
         out+=center_text("── Acquired Upgrades ──", stat_row, (120,120,80))
@@ -663,7 +662,7 @@ def menu_store(inp, save):
         else:
             out+=center_text("No upgrades yet.", stat_row+1,(80,80,80))
 
-        # Upgrade button
+        # upgrade button
         btn_row=stat_row+max(1,len(cs))+3
         if lvl>=10:
             out+=center_text("✦ MAX LEVEL REACHED ✦", btn_row, (200,170,50))
@@ -672,7 +671,7 @@ def menu_store(inp, save):
             btn_clr=lerp((100,200,100),(200,255,150),t) if coins>=cost else (80,60,60)
             out+=center_text(f"[ UPGRADE  —  {cost} coins ]  (SPACE)", btn_row, btn_clr, bold=True)
 
-        # Message
+        # message
         if now<msg_until:
             fade=min(1.0,(msg_until-now)/0.5)
             mc=lerp((20,20,30),(200,220,100),fade)
@@ -684,7 +683,7 @@ def menu_store(inp, save):
 
 
 def menu_main(inp, save):
-    """Main menu. Returns ('play', cls, boss, map_key, size_mult) or None."""
+    """main menu. returns ('play', cls, boss, map_key, size_mult) or None"""
     options = ["Play","Store","Tips","Quit"]
     sel = 0
     particles = make_particles(40, *get_term_size())
@@ -723,17 +722,17 @@ def menu_main(inp, save):
         out = CLR+HIDE
         out += draw_particles(particles, tw, th)
 
-        # Big animated title
+        # big animated title
         out += animated_title(now, th//2-6)
 
-        subtitle = "A real-time ASCII dungeon brawler"
+        subtitle = "a realtime ascii dungeon brawler"
         out += center_text(subtitle, th//2-4, (100,70,140))
 
-        # Coin display
+        # coin display
         coin_str = f"✦  {save['coins']} coins"
         out += center_text(coin_str, th//2-2, (200,170,50))
 
-        # Menu items
+        # menu items
         item_colors = [(160,80,220),(200,160,50),(60,180,140),(180,60,60)]
         for i,opt in enumerate(options):
             y = th//2 + i*2
@@ -741,7 +740,7 @@ def menu_main(inp, save):
                                item_colors[i], lerp(item_colors[i],(60,60,70),0.6),
                                i==sel)
 
-        # Version tag
-        out += at(tw-18, th-1)+fg(50,50,60)+"TillyMagic v2.0"+RST
+        # version tag
+        out += at(tw-18, th-1)+fg(50,50,60)+"tillymagic v2.0"+RST
         write(out)
-        time.sleep(0.033)
+        time.sleep(0.033) # 1/30

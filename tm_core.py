@@ -1,13 +1,13 @@
 #!/usr/bin/env python3
-"""TillyMagic - core constants, terminal helpers, input handler."""
+"""tillymagic core constants, terminal helpers, and input handler"""
 import sys, os, time, math, random, subprocess, json
 from collections import deque
 try:
     import termios, tty, fcntl, select
 except ImportError:
-    print("Requires Unix/macOS terminal."); sys.exit(1)
+    print("requires unix/macos terminal, sorry!"); sys.exit(1)
 
-# ── Terminal size ──────────────────────────────────────────────────────────────
+# terminal size
 def get_term_size():
     import shutil
     s = shutil.get_terminal_size((120, 35))
@@ -16,7 +16,7 @@ def get_term_size():
 TERM_W, TERM_H = get_term_size()
 BASE_MAP_W, BASE_MAP_H = 80, 22
 
-# ── ANSI ───────────────────────────────────────────────────────────────────────
+# ansi
 def fg(r,g,b):   return f"\033[38;2;{r};{g};{b}m"
 def bg(r,g,b):   return f"\033[48;2;{r};{g};{b}m"
 def at(x,y):     return f"\033[{y+1};{x+1}H"
@@ -35,7 +35,7 @@ SND_HIT   = "/System/Library/Components/CoreAudio.component/Contents/SharedSuppo
 SND_FINAL = "/System/Library/Components/CoreAudio.component/Contents/SharedSupport/SystemSounds/system/head_gestures_partial_nod.caf"
 SND_ULT   = "/System/Library/PrivateFrameworks/ToneLibrary.framework/Versions/A/Resources/AlertTones/EncoreInfinitum/Welcome-EncoreInfinitum.caf"
 
-# ── Input ──────────────────────────────────────────────────────────────────────
+# input
 class Input:
     def __init__(self):
         self.fd = sys.stdin.fileno()
@@ -67,7 +67,7 @@ class Input:
         return out
 
     def get_single(self):
-        # Returns only freshly pressed keys - no held repeats. For menus.
+        # returns only freshly pressed keys, eliminates held repeats (which was the issue)
         self._held.clear()
         pressed = list(self._buf); self._buf.clear()
         return pressed
@@ -75,7 +75,7 @@ class Input:
     def restore(self):
         termios.tcsetattr(self.fd, termios.TCSADRAIN, self.old)
 
-# ── Save/load ─────────────────────────────────────────────────────────────────
+# save/load
 SAVE_PATH = os.path.expanduser("~/.tillymagic_save.json")
 
 def load_save():
@@ -96,7 +96,7 @@ def write_save(d):
         with open(SAVE_PATH,'w') as f: json.dump(d,f)
     except: pass
 
-# ── Class definitions ──────────────────────────────────────────────────────────
+# defining classes...
 CLASS_DATA = {
     "wizard": {
         "color": (160,80,220),
@@ -149,7 +149,7 @@ CLASS_DATA = {
     },
 }
 
-# ── Boss definitions ───────────────────────────────────────────────────────────
+# bosses
 BOSS_DATA = {
     "boss1": {
         "name": "The Warden",
@@ -189,7 +189,7 @@ BOSS_DATA = {
     },
 }
 
-# ── Map definitions ────────────────────────────────────────────────────────────
+# maps
 MAP_DATA = {
     "standard": {
         "name": "Standard Arena",
@@ -224,7 +224,7 @@ MAP_DATA = {
         "name": "The Mirror Vault",
         "coin_mult": 2.5,
         "color": (200,220,255),
-        "procedural": False,   # mirror clone logic is fixed geometry
+        "procedural": False,   # mirror clone logic is fixed geometry, cannot generate procedurally
         "desc": ["High-contrast silver and white arena.",
                  "Boss has a mirrored clone on the far side.",
                  "Clone reforms 5s after being shattered.",
@@ -232,7 +232,7 @@ MAP_DATA = {
     },
 }
 
-# ── Upgrade system ─────────────────────────────────────────────────────────────
+# upgrade system
 UPGRADE_STATS = ["strength","cooldown_reduction","speed","dash_range","absorbency","hit_range"]
 UPGRADE_DESCS = {
     "strength":           "+10% damage on all attacks",

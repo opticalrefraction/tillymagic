@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""TillyMagic — main entry point."""
+"""tillymagic main script!"""
 import sys, time
 from tm_core import *
 from tm_menus import menu_main
@@ -70,7 +70,7 @@ def main():
         inp.restore()
         sys.stdout.write(SHOW + RST + CLR)
         sys.stdout.flush()
-        print("Thanks for playing TillyMagic!")
+        print("Hope to see you soon!")
 
 
 if __name__ == "__main__":
