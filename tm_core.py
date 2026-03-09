@@ -66,6 +66,12 @@ class Input:
             if k not in out: out.append(k)
         return out
 
+    def get_single(self):
+        # Returns only freshly pressed keys - no held repeats. For menus.
+        self._held.clear()
+        pressed = list(self._buf); self._buf.clear()
+        return pressed
+
     def restore(self):
         termios.tcsetattr(self.fd, termios.TCSADRAIN, self.old)
 

@@ -272,7 +272,7 @@ def menu_class_select(inp):
         tick_particles(particles, dt, tw, th)
 
         inp.read()
-        keys = inp.get()
+        keys = inp.get_single()
         for k in keys:
             if k in ('w','\x1b[A') and not k in 'wasd': sel=(sel-1)%len(classes)
             if k == 'w': sel=(sel-1)%len(classes)
@@ -326,7 +326,7 @@ def menu_boss_select(inp):
         tick_particles(particles, dt, tw, th)
 
         inp.read()
-        keys = inp.get()
+        keys = inp.get_single()
         for k in keys:
             if k == 'w': sel=(sel-1)%len(bosses)
             if k == 's': sel=(sel+1)%len(bosses)
@@ -383,7 +383,7 @@ def menu_map_select(inp):
         tick_particles(particles, dt, tw, th)
 
         inp.read()
-        keys = inp.get()
+        keys = inp.get_single()
         for k in keys:
             if k == 'w': sel=(sel-1)%len(maps)
             if k == 's': sel=(sel+1)%len(maps)
@@ -450,7 +450,7 @@ def menu_size_select(inp, map_key):
         tick_particles(particles, dt, tw, th)
 
         inp.read()
-        keys = inp.get()
+        keys = inp.get_single()
         for k in keys:
             if k == 'w': sel = max(0, sel-1)
             if k == 's': sel = min(len(sizes)-1, sel+1)
@@ -514,7 +514,7 @@ def menu_tips(inp):
         tick_particles(particles, dt, tw, th)
 
         inp.read()
-        keys = inp.get()
+        keys = inp.get_single()
         for k in keys:
             if k == 'a': tab_idx=(tab_idx-1)%len(TIPS_TABS); scroll=0
             if k == 'd': tab_idx=(tab_idx+1)%len(TIPS_TABS); scroll=0
@@ -587,7 +587,7 @@ def menu_store(inp, save):
         tick_particles(particles, dt, tw, th)
 
         inp.read()
-        keys = inp.get()
+        keys = inp.get_single()
         for k in keys:
             if k == 'a': cls_idx=(cls_idx-1)%len(classes)
             if k == 'd': cls_idx=(cls_idx+1)%len(classes)
@@ -697,7 +697,7 @@ def menu_main(inp, save):
         tick_particles(particles, dt, tw, th)
 
         inp.read()
-        keys = inp.get()
+        keys = inp.get_single()
         for k in keys:
             if k=='w': sel=(sel-1)%len(options)
             if k=='s': sel=(sel+1)%len(options)
