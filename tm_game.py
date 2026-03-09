@@ -1,7 +1,7 @@
-"""tillymagic engine"""
+"""TillyMagic gameplay engine."""
 from tm_core import *
 
-# objects
+# ── Game objects ───────────────────────────────────────────────────────────────
 class Particle:
     def __init__(self,x,y,vx,vy,ch,clr,lt):
         self.x=float(x);self.y=float(y);self.vx=vx;self.vy=vy
@@ -64,7 +64,7 @@ class BossString:  # Marionette
 class CharTile:    # Cartographer
     def __init__(self,x,y): self.x=x;self.y=y; self.born=time.time()
 
-# boss
+# ── Boss ───────────────────────────────────────────────────────────────────────
 class Boss:
     def __init__(self, key, bx, by):
         bd = BOSS_DATA[key]
@@ -80,14 +80,14 @@ class Boss:
         self.last_move = time.time(); self.last_hit = 0
         self.hit_windup = None; self.hit_target = None; self.hit_landing = None
         self.alive = True
-        # boss2 state
+        # Boss2 state
         self.armor = 150 if key=="boss2" else 0
         self.phase2 = False
         self.charge_target = None; self.charge_start = None
-        # boss3 state
+        # Boss3 state
         self.submerged_until = 0
         self.current_offset = (0,0)  # map drift
-        # boss4 beat bar
+        # Boss4 beat bar
         self.beat_interval = 2.0; self.last_beat = time.time()
         self.beat_phase = 0.0
         self.turrets = []  # [(x,y,type,hp,last_fire)]
@@ -98,15 +98,62 @@ class Boss:
     def is_submerged(self): return time.time()<self.submerged_until
 
     def get_cells(self):
+        """Returns (x, y, char) tuples for the boss body based on its unique shape."""
         cx,cy=int(self.x),int(self.y)
         cells=[]
-        for ang in range(0,360,20):
-            bx2=cx+round(2*math.cos(math.radians(ang))*1.8)
-            by2=cy+round(2*math.sin(math.radians(ang))*0.9)
-            if (bx2,by2) not in cells: cells.append((bx2,by2))
+        if self.key=="boss1":
+            # The Warden: a hulking 5x3 humanoid torso
+            # Head
+            cells+=[(cx,cy-2,'O'),(cx-1,cy-2,'('),(cx+1,cy-2,')')]
+            # Shoulders/arms
+            cells+=[(cx-3,cy-1,'/'),(cx-2,cy-1,'['),(cx-1,cy-1,'|'),(cx,cy-1,'|'),(cx+1,cy-1,'|'),(cx+2,cy-1,']'),(cx+3,cy-1,'\\')]
+            # Chest
+            cells+=[(cx-2,cy,'{'),(cx-1,cy,'#'),(cx,cy,'@'),(cx+1,cy,'#'),(cx+2,cy,'}')]
+            # Legs
+            cells+=[(cx-1,cy+1,'|'),(cx,cy+1,'|'),(cx+1,cy+1,'|')]
+            cells+=[(cx-2,cy+2,'/'),(cx-1,cy+2,'|'),(cx+1,cy+2,'|'),(cx+2,cy+2,'\\')]
+        elif self.key=="boss2":
+            # The Stonewarden: a wide rocky golem, 9x5 boxy frame
+            # Top edge
+            for dx in range(-4,5): cells+=[(cx+dx,cy-2,'#')]
+            # Middle rows with armour plates
+            for dy in [-1,0,1]:
+                cells+=[(cx-4,cy+dy,'|'),(cx+4,cy+dy,'|')]
+                for dx in [-3,-2,-1,0,1,2,3]:
+                    ch = {'boss2_armor': '▓'}.get('x','▓') if self.armor>0 else '░'
+                    cells+=[(cx+dx,cy+dy,ch)]
+            # Bottom edge
+            for dx in range(-4,5): cells+=[(cx+dx,cy+2,'#')]
+            # Corner bolts
+            cells+=[(cx-4,cy-2,'╔'),(cx+4,cy-2,'╗'),(cx-4,cy+2,'╚'),(cx+4,cy+2,'╝')]
+        elif self.key=="boss3":
+            # The Tide Caller: a flowing aquatic form, 7x5 wavy
+            cells+=[(cx,cy-3,'V'),(cx-1,cy-3,'~'),(cx+1,cy-3,'~')]
+            cells+=[(cx-3,cy-2,'~'),(cx-2,cy-2,')'),(cx-1,cy-2,'O'),(cx,cy-2,'|'),(cx+1,cy-2,'O'),(cx+2,cy-2,'('),(cx+3,cy-2,'~')]
+            cells+=[(cx-4,cy-1,'~'),(cx-3,cy-1,'{'),(cx-2,cy-1,'~'),(cx,cy-1,'#'),(cx+2,cy-1,'~'),(cx+3,cy-1,'}'),(cx+4,cy-1,'~')]
+            cells+=[(cx-4,cy,'≈'),(cx-3,cy,'~'),(cx-1,cy,'('),(cx,cy,'@'),(cx+1,cy,')'),(cx+3,cy,'~'),(cx+4,cy,'≈')]
+            cells+=[(cx-3,cy+1,'~'),(cx-2,cy+1,'}'),(cx-1,cy+1,'~'),(cx+1,cy+1,'~'),(cx+2,cy+1,'{'),(cx+3,cy+1,'~')]
+            cells+=[(cx-2,cy+2,'~'),(cx-1,cy+2,'v'),(cx,cy+2,'~'),(cx+1,cy+2,'v'),(cx+2,cy+2,'~')]
+            cells+=[(cx-1,cy+3,'~'),(cx,cy+3,'v'),(cx+1,cy+3,'~')]
+        elif self.key=="boss4":
+            # The Hollow Conductor: skeletal figure with baton, 7x7
+            # Skull
+            cells+=[(cx-1,cy-4,'('),(cx,cy-4,'Ω'),(cx+1,cy-4,')')]
+            # Cape/robe upper
+            cells+=[(cx-2,cy-3,'/'),(cx-1,cy-3,'▓'),(cx,cy-3,'|'),(cx+1,cy-3,'▓'),(cx+2,cy-3,'\\')]
+            # Baton arm extended right
+            cells+=[(cx+3,cy-3,'─'),(cx+4,cy-3,'─'),(cx+5,cy-3,'♪')]
+            # Torso
+            cells+=[(cx-3,cy-2,'('),(cx-2,cy-2,'█'),(cx-1,cy-2,'║'),(cx,cy-2,'♦'),(cx+1,cy-2,'║'),(cx+2,cy-2,'█'),(cx+3,cy-2,')')]
+            cells+=[(cx-3,cy-1,'|'),(cx-2,cy-1,'▓'),(cx-1,cy-1,'░'),(cx,cy-1,'|'),(cx+1,cy-1,'░'),(cx+2,cy-1,'▓'),(cx+3,cy-1,'|')]
+            cells+=[(cx-2,cy,'('),(cx-1,cy,'█'),(cx,cy,'@'),(cx+1,cy,'█'),(cx+2,cy,')')]
+            # Robes
+            cells+=[(cx-3,cy+1,'/'),(cx-2,cy+1,'▓'),(cx-1,cy+1,'░'),(cx,cy+1,'▒'),(cx+1,cy+1,'░'),(cx+2,cy+1,'▓'),(cx+3,cy+1,'\\')]
+            cells+=[(cx-4,cy+2,'/'),(cx-3,cy+2,'▓'),(cx-2,cy+2,'░'),(cx-1,cy+2,'▒'),(cx,cy+2,'░'),(cx+1,cy+2,'▒'),(cx+2,cy+2,'░'),(cx+3,cy+2,'▓'),(cx+4,cy+2,'\\')]
+            cells+=[(cx-4,cy+3,'|'),(cx-3,cy+3,'░'),(cx,cy+3,'▓'),(cx+3,cy+3,'░'),(cx+4,cy+3,'|')]
         return cells
 
-# map geometry
+# ── Map geometry ───────────────────────────────────────────────────────────────
 class MapGeometry:
     def __init__(self, key, w, h):
         self.key = key
@@ -145,18 +192,18 @@ class MapGeometry:
             if y==ly and x1<=x<=x2: return True
         return False
 
-# game state
+# ── Game state ─────────────────────────────────────────────────────────────────
 class Game:
-    def __init__(self, cls_name, boss_key, map_key, size_mult, save):
+    def __init__(self, cls_name, boss_key, map_key, size_mult, size_coin_mult, save):
         self.cls_name = cls_name
         self.boss_key = boss_key
         self.map_key = map_key
         self.size_mult = size_mult
 
-        # map dimensions
+        # Map dimensions
         self.mw = max(40, int(BASE_MAP_W * size_mult))
         self.mh = max(18, int(BASE_MAP_H * size_mult))
-        # clamp to terminal
+        # Clamp to terminal
         tw,th = get_term_size()
         self.mw = min(self.mw, tw-2)
         self.mh = min(self.mh, th-6)
@@ -179,61 +226,61 @@ class Game:
         self.absorb = base["absorb"]
         self.hit_range_bonus = base["hit_range_bonus"]
 
-        # move cooldowns
+        # Move cooldowns
         self.move_cds = {k:v for k,v in cd["move_cds"].items()}
         self.move_cds_end = {k:0 for k in range(1,6)}
         self.selected = 1
         self.stun_until = 0
 
-        # dash
+        # Dash
         self.dash_ready = 0; self.dash_trail = []
 
-        # combo states
+        # Combo states
         self.combo_state = 0; self.combo_ready = 0   # shared for move1
 
-        # wizard
+        # Wizard
         self.whirlpool_chars = list("@#$%&*!?~^+=<>|\\/`.,;:abcdefABCDEF0123456789")
         self.ult_active = False; self.ult_start = 0; self.ult_dur = 5.0
         self.ult_dmg_tick = 0; self.ult_proc = None
 
-        # gravedigger
+        # Gravedigger
         self.landmines = []; self.max_mines = 3
         self.fissure_rings = []; self.gd_invincible_until = 0
         self.gd_ult_active = False; self.gd_ult_start = 0
 
-        # marionette
+        # Marionette
         self.strings = []        # BossString list
         self.redirect_ready = False; self.redirect_expires = 0
 
-        # cartographer
+        # Cartographer
         self.charted = set()     # set of (x,y)
         self.char_fire = {}      # (x,y)->fire_until
         self.quicksand_zones = [] # [(x,y,r,expires)]
         self.terrain_walls = []   # [(x,y,expires)]
 
-        # revenant
+        # Revenant
         self.lives = 5; self.rage_stacks = 0
         self.bone_shield_active = False; self.bone_shield_ready = 0
         self.rev_ult_active = False; self.rev_ult_end = 0
 
-        # effects/objects
+        # Effects/objects
         self.particles = []; self.projectiles = []
         self.ripples = []; self.afterimages = []
         self.gravemarks = []
         self.messages = []    # [text,born,dur,x,y,clr]
 
-        # boss
+        # Boss
         bx = self.mw - max(8, int(self.mw*0.2))
         boss = Boss(boss_key, bx, self.mh//2)
         boss.damage = int(boss.damage * (1 + 0.3*(size_mult-1)))
         self.boss = boss
 
-        # boss2 clone (mirror map)
+        # Boss2 clone (mirror map)
         self.mirror_clone_hp = 200 if map_key=="mirror" else 0
         self.mirror_clone_regen = 0
 
         self.game_over = False; self.victory = False
-        self.coin_mult = MAP_DATA[map_key]["coin_mult"]
+        self.coin_mult = MAP_DATA[map_key]["coin_mult"] * size_coin_mult
         self.earned_coins = 0
 
     def cd(self, move):
@@ -268,7 +315,7 @@ class Game:
             else:
                 self.hp=0; self.game_over=True
 
-# input/action dispatch
+# ── Input/action dispatch ──────────────────────────────────────────────────────
 def process_input(g, keys, dt):
     if g.game_over or g.victory:
         return
@@ -288,7 +335,7 @@ def process_input(g, keys, dt):
 
     if not g.is_stunned() and (mx or my):
         spd = g.speed*dt
-        # cartographer: quicksand slow
+        # Cartographer: quicksand slow
         for (qx,qy,qr,qe) in g.quicksand_zones:
             if time.time()<qe and math.hypot(g.px-qx,g.py-qy)<qr:
                 spd *= 0.4
@@ -296,14 +343,14 @@ def process_input(g, keys, dt):
         norm=math.hypot(mx,my) or 1
         nx=max(1,min(g.mw-2, g.px+(mx/norm)*spd))
         ny=max(1,min(g.mh-2, g.py+(my/norm)*spd))
-        # check map blocks
+        # Check map blocks
         if not g.geo.is_blocked(int(nx),int(ny)):
-            # lava check
+            # Lava check
             if g.geo.is_lava(int(nx),int(ny)):
                 g.take_damage(g.max_hp)  # instant death
             else:
                 g.px=nx; g.py=ny
-                # cartographer: chart tile
+                # Cartographer: chart tile
                 if g.cls_name=="cartographer":
                     g.charted.add((int(nx),int(ny)))
 
@@ -339,7 +386,7 @@ def do_action(g):
     fn=dispatch.get(g.cls_name,[])[move-1]
     fn(g)
 
-# wizard
+# ── Wizard ─────────────────────────────────────────────────────────────────────
 def do_scepter(g):
     now=time.time()
     if now<g.combo_ready or not g.boss.alive: return
@@ -382,13 +429,14 @@ def do_blink_scatter(g):
 def do_wiz_ult(g):
     if not g.can_ult(): g.add_msg("Need <50% HP!",1.0,g.mw//2,g.mh//2,(255,80,80)); return
     if g.ult_active: return
+    g.move_cds_end[5]=time.time()+g.cd(5)
     g.ult_active=True; g.ult_start=time.time(); g.ult_dmg_tick=time.time()
     g.stun_until=time.time()+g.ult_dur+0.1
     if g.boss.alive: g.boss.stun(g.ult_dur)
     try: g.ult_proc=subprocess.Popen(["afplay",SND_ULT],stdout=subprocess.DEVNULL,stderr=subprocess.DEVNULL)
     except: pass
 
-# gravedigger
+# ── Gravedigger ────────────────────────────────────────────────────────────────
 def do_shovel(g):
     now=time.time()
     if now<g.combo_ready or not g.boss.alive: return
@@ -445,6 +493,7 @@ def do_exhume(g):
 def do_gd_ult(g):
     if not g.can_ult(): g.add_msg("Need <50% HP!",1.0,g.mw//2,g.mh//2,(255,80,80)); return
     if g.gd_ult_active: return
+    g.move_cds_end[5]=time.time()+g.cd(5)
     g.gd_ult_active=True; g.gd_ult_start=time.time()
     g.gd_invincible_until=time.time()+1.5
     g.fissure_rings.append(FissureRing(int(g.px),int(g.py),max(g.mw,g.mh)))
@@ -454,7 +503,7 @@ def do_gd_ult(g):
     try: subprocess.Popen(["afplay",SND_ULT],stdout=subprocess.DEVNULL,stderr=subprocess.DEVNULL)
     except: pass
 
-# marionette
+# ── Marionette ─────────────────────────────────────────────────────────────────
 def do_silk_strike(g):
     now=time.time()
     if now<g.combo_ready or not g.boss.alive: return
@@ -507,7 +556,7 @@ def do_mar_ult(g):
     g.strings.clear()
     g.add_msg("CUT ALL STRINGS!",1.2,g.mw//2,g.mh//2-1,(255,100,180))
 
-# cartographer
+# ── Cartographer ───────────────────────────────────────────────────────────────
 def do_ink_stab(g):
     now=time.time()
     if now<g.combo_ready or not g.boss.alive: return
@@ -518,7 +567,7 @@ def do_ink_stab(g):
     play(SND_FINAL if final else SND_HIT); _dmg_msg(g,dmg,(60,200,140))
     if final: g.combo_state=0; g.combo_ready=now+0.7; g.boss.stun(0.5)
     else: g.combo_state+=1; g.combo_ready=now+0.25*g.cd_mult
-    # mark current tile
+    # Mark current tile
     g.charted.add((int(g.px),int(g.py)))
 
 def do_flare(g):
@@ -536,7 +585,7 @@ def do_quicksand(g):
 
 def do_terrain_wall(g):
     g.move_cds_end[4]=time.time()+g.cd(4)
-    # place a wall of 5 tiles in front of player facing boss
+    # Place a wall of 5 tiles in front of player facing boss
     bx=g.boss.x-g.px; by=g.boss.y-g.py
     d=math.hypot(bx,by) or 1; perp=(-by/d,bx/d)
     wx=g.px+bx/d*2; wy=g.py+by/d*2
@@ -558,7 +607,7 @@ def do_cart_ult(g):
         g.particles.append(Particle(tx,ty,random.uniform(-1,1),random.uniform(-2,0),'▲',(255,140,30),0.8))
     g.add_msg("MAP IGNITION!",1.2,g.mw//2,g.mh//2-1,(255,180,50))
 
-# revenant
+# ── Revenant ───────────────────────────────────────────────────────────────────
 def do_death_blow(g):
     now=time.time()
     if now<g.combo_ready or not g.boss.alive: return
@@ -600,6 +649,7 @@ def do_self_destruct(g):
 def do_rev_ult(g):
     if not g.can_ult(): g.add_msg("Need <50% HP!",1.0,g.mw//2,g.mh//2,(255,80,80)); return
     if g.rev_ult_active: return
+    g.move_cds_end[5]=time.time()+g.cd(5)
     g.rev_ult_active=True; g.rev_ult_end=time.time()+4.0
     try: subprocess.Popen(["afplay",SND_ULT],stdout=subprocess.DEVNULL,stderr=subprocess.DEVNULL)
     except: pass
@@ -608,39 +658,39 @@ def do_rev_ult(g):
 def _dmg_msg(g, dmg, clr):
     g.add_msg(f"-{dmg}",0.7,int(g.boss.x),int(g.boss.y)-1,clr)
 
-# update
+# ── Update ─────────────────────────────────────────────────────────────────────
 def update_game(g, dt):
     now=time.time()
     if g.game_over or g.victory: return
 
-    # dash trail
+    # Dash trail
     g.dash_trail=[(x,y,t) for x,y,t in g.dash_trail if now-t<0.3]
 
-    # particles
+    # Particles
     for p in g.particles: p.update(dt)
     g.particles=[p for p in g.particles if p.alive()]
 
-    # ripples
+    # Ripples
     g.ripples=[r for r in g.ripples if r.alive()]
 
-    # strings (marionette)
+    # Strings (Marionette)
     g.strings=[s for s in g.strings if s.alive()]
     if g.redirect_ready and now>g.redirect_expires: g.redirect_ready=False
 
-    # quicksand/terrain walls
+    # Quicksand/terrain walls
     g.quicksand_zones=[(x,y,r,e) for x,y,r,e in g.quicksand_zones if now<e]
     g.terrain_walls=[(x,y,e) for x,y,e in g.terrain_walls if now<e]
 
-    # char fire
+    # Char fire
     g.char_fire={k:v for k,v in g.char_fire.items() if now<v}
 
-    # revenant trail
+    # Revenant trail
     if g.rev_ult_active:
         if now>=g.rev_ult_end: g.rev_ult_active=False
         else:
             g.char_fire[(int(g.px),int(g.py))]=now+1.5
 
-    # afterimages
+    # Afterimages
     for ai in g.afterimages:
         if ai.should_explode():
             ai.exploded=True
@@ -652,7 +702,7 @@ def update_game(g, dt):
                 g.particles.append(Particle(ai.x,ai.y,math.cos(ang)*5,math.sin(ang)*2,'.', (255,200,50),0.3))
     g.afterimages=[ai for ai in g.afterimages if ai.alive()]
 
-    # gravemarks
+    # Gravemarks
     for gm in g.gravemarks:
         if gm.should_pull():
             gm.pulled=True
@@ -665,14 +715,14 @@ def update_game(g, dt):
                 _dmg_msg(g,dmg,(180,50,255))
     g.gravemarks=[gm for gm in g.gravemarks if gm.alive()]
 
-    # cartographer charted tile damage
+    # Cartographer charted tile damage
     if g.boss.alive:
         bt=(int(g.boss.x),int(g.boss.y))
         if bt in g.charted and not bt in g.char_fire:
             if random.random()<0.05:  # 5% per frame ~3 dps
                 g.boss.hp-=3; g.boss.flash_until=now+0.1
 
-    # landmines
+    # Landmines
     for m in g.landmines:
         if m.alive() and not m.triggered and g.boss.alive:
             if math.hypot(g.boss.x-m.x,g.boss.y-m.y)<1.5: m.trigger()
@@ -686,7 +736,7 @@ def update_game(g, dt):
                 g.particles.append(Particle(m.x,m.y,math.cos(ang)*8,math.sin(ang)*4,'*',(220,160,30),0.5))
     g.landmines=[m for m in g.landmines if m.alive()]
 
-    # fissure rings
+    # Fissure rings
     for ring in g.fissure_rings:
         if ring.alive() and not ring.hit_boss:
             r=ring.max_r*ring.prog()
@@ -698,14 +748,14 @@ def update_game(g, dt):
     g.fissure_rings=[r for r in g.fissure_rings if r.alive()]
     if g.gd_ult_active and now-g.gd_ult_start>=3.0: g.gd_ult_active=False
 
-    # mirror clone
+    # Mirror clone
     if g.map_key=="mirror" and g.boss.alive:
         if g.mirror_clone_hp<=0:
             g.mirror_clone_regen=max(g.mirror_clone_regen,now+5.0)
         if now>=g.mirror_clone_regen and g.mirror_clone_hp<=0:
             g.mirror_clone_hp=200
 
-    # projectiles
+    # Projectiles
     new_projs=[]
     for proj in g.projectiles:
         proj.update(dt)
@@ -715,7 +765,7 @@ def update_game(g, dt):
         if proj.owner=='player' and g.boss.alive:
             if math.hypot(g.boss.x-proj.x,g.boss.y-proj.y)<2.5:
                 dmg=proj.dmg
-                # stonewarden armor
+                # Stonewarden armor
                 if g.boss.key=="boss2" and g.boss.armor>0:
                     absorbed_armor=min(dmg,g.boss.armor)
                     g.boss.armor-=absorbed_armor; dmg-=absorbed_armor
@@ -723,7 +773,7 @@ def update_game(g, dt):
                         g.boss.phase2=True
                         g.add_msg("SHELL CRACKED!",1.5,g.mw//2,g.mh//2,(255,200,50))
                 if dmg>0: g.boss.hp-=dmg; g.boss.flash_until=now+0.25; _dmg_msg(g,int(dmg),proj.clr)
-                # marionette string reflect
+                # Marionette string reflect
                 if g.strings:
                     reflect=int(proj.dmg*0.3*len(g.strings))
                     g.boss.hp-=reflect
@@ -734,7 +784,7 @@ def update_game(g, dt):
         if not hit: new_projs.append(proj)
     g.projectiles=new_projs
 
-    # wizard ultimate
+    # Wizard ultimate
     if g.ult_active:
         if now-g.ult_start>=g.ult_dur:
             g.ult_active=False
@@ -752,7 +802,7 @@ def update_game(g, dt):
                 g.boss.x=max(2,min(g.mw-4,g.boss.x+(g.px-g.boss.x)/d*3*dt))
                 g.boss.y=max(2,min(g.mh-3,g.boss.y+(g.py-g.boss.y)/d*1.5*dt))
 
-    # boss update
+    # Boss update
     if not g.boss.alive:
         return
     if g.boss.hp<=0:
@@ -762,27 +812,27 @@ def update_game(g, dt):
         return
 
     if not g.boss.is_stunned() and not g.boss.is_submerged():
-        # movement
+        # Movement
         if now-g.boss.last_move>=g.boss.move_interval:
             g.boss.last_move=now
-            # boss-specific movement
-            if g.boss.key=="boss3":  # tide caller drift
+            # Boss-specific movement
+            if g.boss.key=="boss3":  # Tide Caller drift
                 drift_x=math.sin(now*0.5)*0.5
                 g.px=max(1,min(g.mw-2,g.px+drift_x))
             if g.dist_boss()>g.boss.hit_range:
                 dx=g.px-g.boss.x; dy=g.py-g.boss.y
                 d=math.hypot(dx,dy) or 1
                 spd=1.8*(1+0.3*(g.size_mult-1))
-                if g.boss.key=="boss3":  # tide caller: submerge periodically
+                if g.boss.key=="boss3":  # Tide Caller: submerge periodically
                     if random.random()<0.05:
                         g.boss.submerged_until=now+2.0
                 g.boss.x=max(2,min(g.mw-4,g.boss.x+(dx/d)*spd))
                 g.boss.y=max(2,min(g.mh-3,g.boss.y+(dy/d)*spd*0.5))
-                # boss2 phase2 charge
+                # Boss2 phase2 charge
                 if g.boss.key=="boss2" and g.boss.phase2 and random.random()<0.1:
                     g.boss.charge_target=(g.px,g.py); g.boss.charge_start=now
 
-        # stonewarden charge
+        # Stonewarden charge
         if g.boss.key=="boss2" and g.boss.charge_target and g.boss.charge_start:
             if now-g.boss.charge_start<0.5:
                 cx,cy=g.boss.charge_target
@@ -792,24 +842,24 @@ def update_game(g, dt):
             else:
                 g.boss.charge_target=None; g.boss.charge_start=None
 
-        # boss4 beat
+        # Boss4 beat
         if g.boss.key=="boss4":
             g.boss.beat_phase=(now-g.boss.last_beat)/g.boss.beat_interval
             if g.boss.beat_phase>=1.0:
                 g.boss.last_beat=now; g.boss.beat_phase=0.0
-                # spawn turret occasionally
+                # Spawn turret occasionally
                 if not g.boss.turrets_spawned and g.boss.hp<g.boss.max_hp*0.7:
                     g.boss.turrets_spawned=True
                     for tx2,ty2 in [(10,5),(g.mw-10,5),(10,g.mh-5),(g.mw-10,g.mh-5)]:
                         g.boss.turrets.append([tx2,ty2,'violin',30,0])
-            # turret fire
+            # Turret fire
             for turret in g.boss.turrets[:]:
                 if turret[2]=='dead': continue
                 if now-turret[4]>2.0:
                     turret[4]=now
                     g.projectiles.append(Projectile(turret[0],turret[1],g.px,g.py,10,'♪',(200,200,80),10,'boss'))
 
-        # hit logic
+        # Hit logic
         if g.boss.hit_windup is None and now-g.boss.last_hit>=g.boss.hit_cd:
             if g.dist_boss()<=g.boss.hit_range+2:
                 g.boss.hit_windup=now
@@ -823,7 +873,7 @@ def update_game(g, dt):
                 if g.boss.hit_target:
                     if math.hypot(g.px-g.boss.hit_target[0],g.py-g.boss.hit_target[1])<1.5:
                         if g.redirect_ready:
-                            # marionette redirect
+                            # Marionette redirect
                             g.redirect_ready=False
                             g.boss.hp-=g.boss.damage*2
                             g.boss.flash_until=now+0.5
@@ -834,7 +884,7 @@ def update_game(g, dt):
                 g.boss.hit_windup=None; g.boss.hit_target=None
                 g.boss.hit_landing=None; g.boss.last_hit=now
 
-    # projectiles from boss hit player
+    # Projectiles from boss hit player
     new_projs2=[]
     for proj in g.projectiles:
         if proj.owner=='boss':
@@ -845,16 +895,16 @@ def update_game(g, dt):
         new_projs2.append(proj)
     g.projectiles=new_projs2
 
-    # mirror clone attack
+    # Mirror clone attack
     if g.map_key=="mirror" and g.mirror_clone_hp>0:
         cx2=g.mw-1-int(g.boss.x); cy2=int(g.boss.y)
         if math.hypot(g.px-cx2,g.py-cy2)<1.5 and random.random()<0.02:
             g.take_damage(g.boss.damage//2)
 
-    # clean messages
+    # Clean messages
     g.messages=[m for m in g.messages if now-m[1]<m[2]]
 
-# render 
+# ── Render ─────────────────────────────────────────────────────────────────────
 def render_game(g, out_buf):
     now=time.time()
     mw,mh=g.mw,g.mh
@@ -864,7 +914,7 @@ def render_game(g, out_buf):
         xi,yi=int(x),int(y)
         if 0<=xi<mw and 0<=yi<mh: buf[(xi,yi)]=(ch,clr,b)
 
-    # background based on map
+    # Background based on map
     if g.map_key=="ossuary":
         floor_clr=(35,30,25)
     elif g.map_key=="forge":
@@ -878,21 +928,21 @@ def render_game(g, out_buf):
         for x in range(mw):
             buf[(x,y)]=('.',floor_clr,None)
 
-    # border
+    # Border
     for x in range(mw):
         put(x,0,'#',(60,60,80)); put(x,mh-1,'#',(60,60,80))
     for y in range(mh):
         put(0,y,'#',(60,60,80)); put(mw-1,y,'#',(60,60,80))
 
-    # map decoration
+    # Map decoration
     if g.map_key=="ossuary":
-        # skull motifs on walls
+        # Skull motifs on walls
         for x in range(3,mw-3,8):
             put(x,0,'☠',(120,100,60)); put(x,mh-1,'☠',(120,100,60))
-        # ribcage sides
+        # Ribcage sides
         for y in range(2,mh-2,3):
             put(0,y,')',(80,60,40)); put(mw-1,y,'(',(80,60,40))
-        # pillars
+        # Pillars
         for (cx,cy,r) in g.geo.pillars:
             for ang in range(0,360,15):
                 px2=cx+round(r*math.cos(math.radians(ang))*1.8)
@@ -901,16 +951,16 @@ def render_game(g, out_buf):
             put(cx,cy,'#',(180,150,90))
 
     elif g.map_key=="forge":
-        # lava channels
+        # Lava channels
         for (ly,x1,x2) in g.geo.lava:
             for x in range(x1,x2+1):
                 t=(math.sin(now*3+x*0.3)+1)/2
                 clr=lerp((180,60,0),(255,140,20),t)
                 put(x,ly,'≈',clr)
-                # ember particles occasionally
+                # Ember particles occasionally
                 if random.random()<0.005:
                     g.particles.append(Particle(x,ly,random.uniform(-1,1),-2,'.',lerp((200,100,0),(255,200,0),random.random()),0.4))
-        # furnaces
+        # Furnaces
         for fx in g.geo.furnace_cols:
             put(fx,1,'▓',(160,80,30)); put(fx,mh-2,'▓',(160,80,30))
             fire_active=g.geo.furnace_fire.get(fx,0)
@@ -922,7 +972,7 @@ def render_game(g, out_buf):
                 g.geo.furnace_fire[fx]=now+1.5
 
     elif g.map_key=="mirror":
-        # box drawing mirror frames
+        # Box drawing mirror frames
         for y in range(2,mh-2,4):
             for x in range(2,mw-2,10):
                 t=(math.sin(now*0.5+x*0.1+y*0.1)+1)/2
@@ -933,7 +983,7 @@ def render_game(g, out_buf):
                 put(x+1,y+2,'═',c); put(x+2,y+2,'═',c)
                 put(x,y+1,'║',c); put(x+3,y+1,'║',c)
 
-    # charted tiles (cartographer)
+    # Charted tiles (Cartographer)
     for (tx,ty) in g.charted:
         if (tx,ty) in g.char_fire:
             t=(math.sin(now*6)+1)/2
@@ -941,7 +991,7 @@ def render_game(g, out_buf):
         else:
             put(tx,ty,',',lerp((30,60,50),(60,120,90),(math.sin(now+tx*0.3)+1)/2))
 
-    # quicksand zones
+    # Quicksand zones
     for (qx,qy,qr,qe) in g.quicksand_zones:
         if now<qe:
             for ang in range(0,360,15):
@@ -950,12 +1000,12 @@ def render_game(g, out_buf):
                 put(sx,sy,'~',(160,140,60))
             put(qx,qy,'*',(180,160,80))
 
-    # terrain walls
+    # Terrain walls
     for (wx,wy,we) in g.terrain_walls:
         if now<we:
             put(wx,wy,'▓',(80,100,60))
 
-    # gravemark circles
+    # Gravemark circles
     for gm in g.gravemarks:
         age=now-gm.born
         for ang in range(0,360,10):
@@ -964,12 +1014,12 @@ def render_game(g, out_buf):
             put(gx,gy,'+',lerp((100,0,180),(200,100,255),abs(math.sin(age*3))))
         put(gm.x,gm.y,'◈',(200,100,255))
 
-    # dash trail
+    # Dash trail
     for x,y,t in g.dash_trail:
         alpha=1.0-(now-t)/0.3
         put(x,y,'~',lerp((30,30,50),(100,200,255),alpha))
 
-    # afterimages
+    # Afterimages
     for ai in g.afterimages:
         age=now-ai.born
         if not ai.exploded:
@@ -982,7 +1032,7 @@ def render_game(g, out_buf):
                     ai.y+int(r*math.sin(math.radians(ang))*0.9),
                     '*',lerp((255,200,50),(200,100,0),prog))
 
-    # ripples
+    # Ripples
     for rip in g.ripples:
         p=rip.prog(); r=rip.max_r*p; fade=1.0-p
         for ang in range(0,360,8):
@@ -991,7 +1041,7 @@ def render_game(g, out_buf):
             c=lerp(rip.c1,rip.c2,p); c=lerp((0,0,0),c,fade)
             put(int(rx),int(ry),'o' if p<0.5 else '.',c)
 
-    # fissure rings
+    # Fissure rings
     for ring in g.fissure_rings:
         prog=ring.prog(); r=(max(mw,mh)*0.7)*prog
         for ang in range(0,360,6):
@@ -1001,7 +1051,7 @@ def render_game(g, out_buf):
             put(int(rx),int(ry),random.choice(['#','|','\\','/']) if random.random()<0.3 else '#',
                 lerp((100,40,0),(255,140,30),glow))
 
-    # landmines
+    # Landmines
     for m in g.landmines:
         if not m.alive(): continue
         if m.triggered and not m.exploded:
@@ -1011,7 +1061,7 @@ def render_game(g, out_buf):
             d2=math.hypot(g.boss.x-m.x,g.boss.y-m.y) if g.boss.alive else 99
             put(m.x,m.y,'x' if d2<3 else '.',(80,60,30) if d2<3 else (50,40,25))
 
-    # marionette strings (draw line from player to boss)
+    # Marionette strings (draw line from player to boss)
     if g.cls_name=="marionette" and g.strings:
         dx=g.boss.x-g.px; dy=g.boss.y-g.py; d=max(1,math.hypot(dx,dy))
         for step in range(1,int(d),2):
@@ -1019,29 +1069,29 @@ def render_game(g, out_buf):
             t=(math.sin(now*5+step*0.3)+1)/2
             put(sx,sy,'─' if abs(dx)>abs(dy) else '│',lerp((180,40,100),(255,100,180),t))
 
-    # particles
+    # Particles
     for p in g.particles:
         put(int(p.x),int(p.y),p.ch,p.clr)
 
-    # projectiles
+    # Projectiles
     for proj in g.projectiles:
         for i,(tx,ty) in enumerate(proj.trail):
             fade=(i+1)/(len(proj.trail)+1)
             put(tx,ty,'.',lerp((20,0,40),proj.clr,fade))
         put(int(proj.x),int(proj.y),proj.ch,proj.clr)
 
-    # boss turrets (boss4)
+    # Boss turrets (boss4)
     for turret in g.boss.turrets:
         if turret[2]!='dead':
             put(turret[0],turret[1],'♪',(200,200,80))
 
-    # mirror clone
+    # Mirror clone
     if g.map_key=="mirror" and g.mirror_clone_hp>0 and g.boss.alive:
         cx2=mw-1-int(g.boss.x); cy2=int(g.boss.y)
         t=(math.sin(now*2)+1)/2
         put(cx2,cy2,'@',lerp((100,100,200),(180,180,255),t))
 
-    # boss hit warning
+    # Boss hit warning
     if g.boss.alive and g.boss.hit_windup is not None and g.boss.hit_target:
         we=now-g.boss.hit_windup; locked=we>=2.0
         if locked:
@@ -1054,30 +1104,45 @@ def render_game(g, out_buf):
             for ddy in range(-1,2):
                 put(tx2+ddx,ty2+ddy,'#',c)
 
-    # boss (stonewarden armor visual)
+    # Boss rendering - unique per-boss shape
     if g.boss.alive:
         flashing=now<g.boss.flash_until
-        for (cx2,cy2) in g.boss.get_cells():
+        flash_prog=max(0,(now-(g.boss.flash_until-0.3))/0.3) if flashing else 0
+        cells=g.boss.get_cells()
+        for cell in cells:
+            cx2,cy2,bch=cell
             if flashing:
-                prog=max(0,(now-(g.boss.flash_until-0.25))/0.25)
-                clr=lerp((255,80,0),(200,100,100),prog)
-            elif g.boss.key=="boss2" and g.boss.armor>0:
-                clr=lerp((100,100,80),(200,190,140),g.boss.armor/150)
+                clr=lerp((255,220,50),g.boss.color,flash_prog)
+            elif g.boss.key=="boss1":
+                # Warden: deep crimson, pulses darker when winding up
+                wind=1.0 if g.boss.hit_windup is None else min(1,(now-g.boss.hit_windup)/2.0)
+                clr=lerp((180,20,20),(240,80,60),wind)
+            elif g.boss.key=="boss2":
+                if g.boss.armor>0:
+                    # Armoured: stone grey-brown
+                    clr=lerp((80,75,60),(200,190,140),g.boss.armor/150)
+                else:
+                    # Phase 2: hot orange cracks
+                    t=(math.sin(now*4)+1)/2
+                    clr=lerp((200,80,20),(255,160,50),t)
             elif g.boss.key=="boss3":
-                t=(math.sin(now*2)+1)/2
-                clr=lerp((40,80,180),(80,140,255),t)
+                # Tide Caller: flowing blue-teal animated
+                t=(math.sin(now*2+cx2*0.3+cy2*0.2)+1)/2
+                clr=lerp((30,80,200),(80,200,255),t)
+            elif g.boss.key=="boss4":
+                # Hollow Conductor: sickly gold with beat-pulse
+                beat_t=(math.sin(g.boss.beat_phase*math.pi*2)+1)/2
+                clr=lerp((120,100,20),(255,230,60),beat_t)
             else:
                 clr=g.boss.color
-            put(cx2,cy2,'O',clr)
-        bch='@' if not flashing else '!'
-        bc=lerp(g.boss.color,(255,255,100),0.4 if flashing else 0)
-        put(int(g.boss.x),int(g.boss.y),bch,bc)
-        # submerged boss
+            put(cx2,cy2,bch,clr)
+        # Submerged: overlay ~ over entire shape
         if g.boss.is_submerged():
-            t=(math.sin(now*4)+1)/2
-            put(int(g.boss.x),int(g.boss.y),'~',lerp((40,80,160),(80,140,255),t))
+            t=(math.sin(now*5)+1)/2
+            for cell in cells:
+                put(cell[0],cell[1],'~',lerp((20,60,160),(60,160,255),t))
 
-    # wizard ultimate whirlpool
+    # Wizard ultimate whirlpool
     if g.ult_active:
         elapsed=now-g.ult_start
         wchars=g.whirlpool_chars
@@ -1093,7 +1158,7 @@ def render_game(g, out_buf):
                     clr=lerp((180,0,200),(255,100,255),hs) if hs<0.5 else lerp((255,100,255),(100,0,180),(hs-0.5)*2)
                     put(x,y,ch2,clr)
 
-    # gd ultimate grey overlay
+    # GD ultimate grey overlay
     if g.gd_ult_active:
         intensity=min(1.0,(now-g.gd_ult_start)/0.3)
         for y in range(1,mh-1):
@@ -1103,7 +1168,7 @@ def render_game(g, out_buf):
                     avg=int((fc[0]+fc[1]+fc[2])/3)
                     buf[(x,y)]=(ch2,lerp(fc,(avg,avg,avg),intensity*0.7),bc)
 
-    # player
+    # Player
     px2,py2=int(g.px),int(g.py)
     if now<g.gd_invincible_until:
         flash=abs(math.sin(now*20))
@@ -1117,29 +1182,29 @@ def render_game(g, out_buf):
         clr=CLASS_DATA[g.cls_name]["color"]
         put(px2,py2,'@',lerp(clr,(200,255,200),0.3))
 
-    # revenant: burning trail on last life
+    # Revenant: burning trail on last life
     if g.cls_name=="revenant" and g.lives==1:
         if random.random()<0.3:
             g.particles.append(Particle(g.px,g.py,random.uniform(-0.5,0.5),-1,'▲',(220,100,30),0.4))
 
-    # ── build output string ────────────────────────────────────────────────────
+    # ── Build output string ────────────────────────────────────────────────────
     tw,th=get_term_size()
     offset_x=max(0,(tw-mw)//2)
     offset_y=1  # leave row 0 for title/HP
 
     out=HIDE
 
-    # hp bar row
+    # HP bar row
     hp_ratio=max(0,g.hp/g.max_hp)
     hp_clr=lerp((255,50,50),(50,220,80),hp_ratio)
 
-    # player HP
+    # Player HP
     if g.cls_name=="revenant":
         php=f"HP:{g.hp}/{60}  Lives:{'♥'*g.lives}{'♡'*(5-g.lives)}  Rage:{g.rage_stacks}"
     else:
         php=f"HP:{g.hp}/{g.max_hp}"
 
-    # boss HP — fixed width to avoid bleed
+    # Boss HP — fixed width to avoid bleed
     if g.boss.alive:
         bhp=f"BOSS:{g.boss.hp}/{g.boss.max_hp}"
         if g.boss.key=="boss2" and g.boss.armor>0:
@@ -1148,13 +1213,13 @@ def render_game(g, out_buf):
         bhp="BOSS: DEFEATED"
 
     out+=at(offset_x,0)+fg(*hp_clr)+BOLD+php+RST
-    # right-align boss HP
+    # Right-align boss HP
     boss_x=offset_x+mw-len(bhp)
     out+=at(boss_x,0)+fg(*lerp((255,100,100),(100,220,80),g.boss.hp/max(1,g.boss.max_hp)))+BOLD+bhp+RST
-    # blank the rest of the HP row to prevent bleeding
+    # Blank the rest of the HP row to prevent bleeding
     out+=at(offset_x+len(php),0)+fg(0,0,0)+" "*(boss_x-offset_x-len(php))+RST
 
-    # map rows
+    # Map rows
     for row in range(mh):
         line=""
         for col in range(mw):
@@ -1163,13 +1228,13 @@ def render_game(g, out_buf):
         line+=RST
         out+=at(offset_x,offset_y+row)+line
 
-    # hud rows (below map)
+    # HUD rows (below map)
     hud_y=offset_y+mh
     # Clear HUD area first (prevents ghosting)
     for i in range(4):
         out+=at(0,hud_y+i)+" "*tw+RST
 
-    # move bar
+    # Move bar
     now2=time.time()
     move_names=CLASS_DATA[g.cls_name]["move_names"]
     move_str=""
@@ -1197,21 +1262,21 @@ def render_game(g, out_buf):
 
     out+=at(offset_x,hud_y)+move_str
 
-    # dash CD
+    # Dash CD
     dcd=g.dash_ready-now2
     if dcd>0:
         out+=at(offset_x,hud_y+1)+fg(70,70,70)+f"[Q:Dash {dcd:.1f}s]"+RST
     else:
         out+=at(offset_x,hud_y+1)+fg(100,200,100)+f"[Q:Dash ready]"+RST
 
-    # boss4 beat bar
+    # Boss4 beat bar
     if g.boss.key=="boss4" and g.boss.alive:
         blen=30; bfill=int(blen*g.boss.beat_phase)
         beat_bar="BEAT:[" + "█"*bfill + "░"*(blen-bfill)+"]"
         bc2=lerp((100,100,80),(255,220,50),g.boss.beat_phase)
         out+=at(offset_x+mw-len(beat_bar)-2,hud_y+1)+fg(*bc2)+beat_bar+RST
 
-    # mid-screen messages
+    # Mid-screen messages
     for msg in g.messages:
         text,born,dur,mx2,my2,mc=msg
         age=now2-born; fade=1.0-age/dur
@@ -1221,7 +1286,7 @@ def render_game(g, out_buf):
             if 0<=sy<th and 0<=sx<tw:
                 out+=at(sx,sy)+fg(*c)+BOLD+text+RST
 
-    # game over / victory
+    # Game over / victory
     if g.game_over:
         msg2="GAME OVER  —  press ESC"
         cx2=offset_x+mw//2-len(msg2)//2

@@ -1,12 +1,12 @@
 #!/usr/bin/env python3
-"""tillymagic main script!"""
+"""TillyMagic — main entry point."""
 import sys, time
 from tm_core import *
 from tm_menus import menu_main
 from tm_game import Game, process_input, update_game, render_game
 
-def run_game(inp, cls_name, boss_key, map_key, size_mult, save):
-    g = Game(cls_name, boss_key, map_key, size_mult, save)
+def run_game(inp, cls_name, boss_key, map_key, size_mult, size_coin_mult, save):
+    g = Game(cls_name, boss_key, map_key, size_mult, size_coin_mult, save)
 
     sys.stdout.write(CLR + HIDE)
     sys.stdout.flush()
@@ -59,8 +59,8 @@ def main():
             if result is None:
                 break
 
-            _, cls_name, boss_key, map_key, size_mult = result
-            coins = run_game(inp, cls_name, boss_key, map_key, size_mult, save)
+            _, cls_name, boss_key, map_key, size_mult, size_coin_mult = result
+            coins = run_game(inp, cls_name, boss_key, map_key, size_mult, size_coin_mult, save)
 
             if coins > 0:
                 save["coins"] += coins
@@ -70,7 +70,7 @@ def main():
         inp.restore()
         sys.stdout.write(SHOW + RST + CLR)
         sys.stdout.flush()
-        print("Hope to see you soon!")
+        print("Thanks for playing TillyMagic!")
 
 
 if __name__ == "__main__":
