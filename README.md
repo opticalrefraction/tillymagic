@@ -1,9 +1,9 @@
 # Tillymagic (macOS)
-_old-school combat games turned modern!_
+_the time passing terminal game you never knew you needed!_
 
 ![gameplay](mediacontent/sample.gif)
 
-and many more classes, bosses, and maps!
+and many more classes, bosses, and maps! the point is _you_ choose your _own_ path.
 
 to play, run:
 ```
@@ -16,8 +16,8 @@ cd tillymagic
 # run main script
 python3 tillymagic2.py
 ```
-
-
-fixing soon: appears as 1 or 2 maps are bugged. will fix is next update as I attempt to resolve it.
-
+like the game? leave a star! :star:
+## extra notes
 any recommendations or bug reports can go to the issues tab. please tag them appropriately when doing so!
+
+fixing soon: appears as 1 or 2 maps are bugged. will fix in next update as I attempt to resolve it.
