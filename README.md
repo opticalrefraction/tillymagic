@@ -20,8 +20,6 @@ python3 tillymagic2.py
 ```
 like the game? leave a star! :star:
 ## extra notes
-any recommendations or bug reports can go to the issues tab. please tag them appropriately when doing so!
+any recommendations or bug reports can go to the issues tab. make sure to search for your issue before creating one. please tag them appropriately when doing so! 
 
-this repository will be updated frequently--I will plan on integrating an update checker in code. 
-
-fixing soon: appears as 1 or 2 maps are bugged. will fix in next update as I attempt to resolve it.
+this repository will be updated frequently--I will plan on integrating an update checker in code.
