@@ -103,7 +103,7 @@ SAVE_PATH = os.path.expanduser("~/.tillymagic_save.json")
 def load_save():
     default = {
         "coins": 0,
-        "class_levels": {"wizard":1,"gravedigger":1,"marionette":1,"cartographer":1,"revenant":1,"siphon":1},
+        "class_levels": {"wizard":1,"gravedigger":1,"marionette":1,"cartographer":1,"revenant":1,"siphon":1,"undertaker":1,"glasswright":1,"bellwether":1,"ashwalker":1},
         "class_stats": {}   # class -> {stat: bonus}
     }
     try:
@@ -172,17 +172,65 @@ CLASS_DATA = {
     "siphon": {
         "color": (80,200,180),
         "hp": 95, "speed": 19.0, "dash_dist": 5,
-        # hijack: 3s cd. window opens, reflects next boss attack. no personal combo.
-        # overload: detonate all stored charges for burst damage.
-        # null field: zone that blocks boss buffs/speed boosts for 8s.
-        # leech: steal boss current speed/armor buff and apply to self.
-        # ult: siphon everything, emit all at once in a ring explosion.
         "move_names": {1:"Hijack",2:"Overload",3:"Null Field",4:"Leech",5:"Void Surge"},
         "move_cds":   {1:3.0, 2:12.0, 3:16.0, 4:10.0, 5:60.0},
         "desc": ["A void mage who steals and reflects boss energy.",
                  "Hijack opens a 1.5s window: reflects the next attack.",
                  "Stores up to 3 charges. Overload detonates them all.",
                  "Ultimate: Void Surge - unleash a ring of all stolen power."],
+    },
+    "undertaker": {
+        "color": (120,80,180),
+        # slow axe executioner. builds sentence stacks on the boss with every hit.
+        # at 5 stacks: execution fires automatically for massive damage.
+        # guillotine ult deals damage equal to ALL stacks ever accumulated in the run.
+        "hp": 85, "speed": 13.0, "dash_dist": 3,
+        "move_names": {1:"Axe",2:"Parry",3:"Chain Drag",4:"Execution",5:"Guillotine"},
+        "move_cds":   {1:0.7, 2:9.0, 3:16.0, 4:0.0, 5:60.0},
+        "desc": ["A slow axe executioner. Builds Sentence stacks on the boss.",
+                 "Every 5 stacks triggers Execution automatically.",
+                 "Parry counters, Chain Drag repositions, Guillotine scales with all stacks.",
+                 "Ultimate: damage = 8 x total stacks accumulated this run."],
+    },
+    "glasswright": {
+        "color": (160,220,240),
+        # places stained glass panes as solid terrain traps.
+        # shattering a pane leaves bleed shards. prism blast fires beams through all panes.
+        # grand facade ult coats the entire arena border in glass.
+        "hp": 75, "speed": 20.0, "dash_dist": 5,
+        "move_names": {1:"Glass Shiv",2:"Place Pane",3:"Shatter",4:"Prism Blast",5:"Grand Facade"},
+        "move_cds":   {1:0.4, 2:8.0, 3:6.0, 4:14.0, 5:60.0},
+        "desc": ["Places stained glass panes as terrain traps. 75 HP.",
+                 "Shattering panes leaves bleed shard zones.",
+                 "Prism Blast fires beams through every active pane.",
+                 "Ultimate: Grand Facade - coat the arena border in glass."],
+    },
+    "bellwether": {
+        "color": (200,180,80),
+        # resource management fighter. summons ghostly Followers (up to 5).
+        # rally cry sends them at the boss. dispatch holds them as a living wall.
+        # martyrdom sacrifices one for burst. no personal damage.
+        "hp": 100, "speed": 18.0, "dash_dist": 4,
+        "move_names": {1:"Summon",2:"Rally Cry",3:"Dispatch",4:"Martyrdom",5:"The Charge"},
+        "move_cds":   {1:5.0, 2:8.0, 3:10.0, 4:12.0, 5:60.0},
+        "desc": ["Summons Followers (up to 5) to fight for you.",
+                 "Rally Cry sends them at the boss for burst damage.",
+                 "Dispatch holds them as a living wall. Martyrdom sacrifices one.",
+                 "Ultimate: The Charge - all followers rush simultaneously."],
+    },
+    "ashwalker": {
+        "color": (220,120,40),
+        # every tile walked ignites briefly (ember step).
+        # ignition doubles burn intensity on all active tiles.
+        # backdraft scatters embers in a radial burst.
+        # conflagration ult sets every walked tile on fire for 4s simultaneously.
+        "hp": 95, "speed": 21.0, "dash_dist": 5,
+        "move_names": {1:"Cinder Strike",2:"Ignition",3:"Backdraft",4:"Ember Step",5:"Conflagration"},
+        "move_cds":   {1:0.4, 2:10.0, 3:8.0, 4:0.0, 5:60.0},
+        "desc": ["Every tile you walk ignites as an ember.",
+                 "Ignition doubles burn intensity on all active embers.",
+                 "Backdraft scatters embers radially outward.",
+                 "Ultimate: Conflagration - every ember burns simultaneously for 4s."],
     },
 }
 

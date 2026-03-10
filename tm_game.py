@@ -353,6 +353,9 @@ class MapGeometry:
             if y==ly and x1<=x<=x2: return True
         for wall in self.walls:
             if wall[0]==x and wall[1]==y: return True
+        # architect walls from boss5 are stored on the boss object at runtime;
+        # checked separately in process_input via the boss-aware path, so no
+        # reference to g here. instead the movement code checks architect_walls directly.
         return False
 
     def is_lava(self,x,y):
@@ -408,6 +411,7 @@ class Game:
         self.combo_state = 0; self.combo_ready = 0
         self.combo_lockout_until = 0
         self.combo_last_hit = 0.0  # timestamp of last hit on move 1, used for 2s idle reset
+        self.chest_stand_start = None  # reliquary chest interaction timer
 
         # wizard
         self.whirlpool_chars = list("@#$%&*!?~^+=<>|\\/`.,;:abcdefABCDEF0123456789")
@@ -442,9 +446,37 @@ class Game:
         self.siphon_charges = []
         self.hijack_active = False
         self.hijack_start = 0.0
-        self.siphon_null_field = None   # (x, y, expires) or None
+        self.siphon_null_field = None
         self.siphon_leech_active = False
         self.siphon_leech_expires = 0.0
+
+        # undertaker. sentence stacks build on boss, reset on execution.
+        # total_sentences accumulates all stacks ever landed (for guillotine scaling).
+        # execution_ready fires automatically at 5 stacks.
+        # parry_window: True for 0.8s after pressing parry — next boss hit counters.
+        self.sentence_stacks = 0
+        self.total_sentences = 0
+        self.execution_ready = False
+        self.parry_window = False
+        self.parry_window_start = 0.0
+
+        # glasswright. panes are placed as solid terrain (up to 4 active).
+        # each pane is [x, y, hp, shard_born] where shard_born is set on shatter.
+        # shards linger as bleed zones for 3s after a pane breaks.
+        self.glass_panes = []   # [[x, y, hp, shatter_time_or_None]]
+        self.glass_shards = []  # [(x, y, expires)]
+
+        # bellwether. followers are positioned agents that act on commands.
+        # each follower: [x, y, state, target_x, target_y, hp]
+        # states: 'idle', 'wall', 'charging', 'dead'
+        self.followers = []
+        self.wall_mode = False
+
+        # ashwalker. ember_tiles: dict of (x,y)->expires. intensity doubles during ignition.
+        # ignition_active: True for 2s after pressing move 2.
+        self.ember_tiles = {}       # (x,y) -> expiry timestamp
+        self.ignition_active = False
+        self.ignition_until = 0.0
 
         # effects/objects
         self.particles = []; self.projectiles = []
@@ -519,7 +551,9 @@ def process_input(g, keys, dt):
         elif k in('\x03','\x1b'): g.running=False
 
     if not g.is_stunned() and (mx or my):
-        spd = g.speed*dt
+        # reliquary water slow: speed_override set when player is in water
+        effective_speed = getattr(g, 'speed_override', None) or g.speed
+        spd = effective_speed*dt
         # cartographer: quicksand slow
         for (qx,qy,qr,qe) in g.quicksand_zones:
             if time.time()<qe and math.hypot(g.px-qx,g.py-qy)<qr:
@@ -543,7 +577,14 @@ def process_input(g, keys, dt):
             ny = max(1, min(g.mh-2, raw_ny))
         # check map blocks
         boss_body = g.boss.get_body_set() if g.boss.alive else set()
-        if not g.geo.is_blocked(int(nx),int(ny)) and (int(nx),int(ny)) not in boss_body:
+        # architect walls (boss5) block the player but not the boss itself
+        arch_blocked = False
+        if g.boss.alive and g.boss.key == "boss5":
+            for seg in g.boss.architect_walls:
+                if (int(nx), int(ny)) in [(ax, ay) for ax, ay in seg]:
+                    arch_blocked = True
+                    break
+        if not g.geo.is_blocked(int(nx),int(ny)) and (int(nx),int(ny)) not in boss_body and not arch_blocked:
             # lava check
             if g.geo.is_lava(int(nx),int(ny)):
                 g.take_damage(g.max_hp)  # instant death
@@ -586,6 +627,10 @@ def do_action(g):
         "cartographer": [do_ink_stab,do_flare,do_quicksand,do_terrain_wall,do_cart_ult],
         "revenant":     [do_death_blow,do_rage_strike,do_bone_shield,do_self_destruct,do_rev_ult],
         "siphon":       [do_hijack,do_overload,do_null_field,do_leech,do_void_surge],
+        "undertaker":   [do_axe,do_parry,do_chain_drag,do_execution,do_guillotine],
+        "glasswright":  [do_glass_shiv,do_place_pane,do_shatter,do_prism_blast,do_grand_facade],
+        "bellwether":   [do_summon,do_rally_cry,do_dispatch,do_martyrdom,do_the_charge],
+        "ashwalker":    [do_cinder_strike,do_ignition,do_backdraft,do_ember_step,do_conflagration],
     }
     fn=dispatch.get(g.cls_name,[])[move-1]
     # if firing any move other than the basic combo, reset the combo state immediately
@@ -989,6 +1034,437 @@ def do_void_surge(g):
     g.add_msg("VOID SURGE!", 1.5, g.mw//2, g.mh//2 - 1, (80, 230, 200))
     play(SND_ULT)
 
+
+# ── undertaker ────────────────────────────────────────────────────────────────
+# slow axe executioner. builds sentence stacks on every hit.
+# at 5 stacks, execution fires automatically for big damage.
+# parry counters the next boss hit. chain drag repositions the boss.
+# guillotine ult: damage = 8 * total stacks accumulated this entire run.
+
+def do_axe(g):
+    now = time.time()
+    if not g.boss.alive or g.dist_boss() > 2.5 + g.hit_range_bonus:
+        g.add_msg("Out of range!", 0.8, g.mw//2, g.mh//2-1, (200,200,100)); return
+    g.move_cds_end[1] = now + g.cd(1)
+    dmg = int(18 * g.dmg_mult)
+    g.boss.hp -= dmg; g.boss.flash_until = now + 0.3
+    play(SND_HIT); _dmg_msg(g, dmg, (140,80,220))
+    # build a sentence stack on the boss
+    g.sentence_stacks += 1
+    g.total_sentences += 1
+    g.add_msg(f"Sentence {g.sentence_stacks}/5", 0.5, int(g.boss.x), int(g.boss.y)-2, (140,80,220))
+    # auto-fire execution at 5 stacks
+    if g.sentence_stacks >= 5:
+        _do_execution_burst(g, now)
+
+def _do_execution_burst(g, now):
+    # internal: fires execution damage and resets stacks.
+    g.sentence_stacks = 0
+    ex_dmg = int(80 * g.dmg_mult)
+    g.boss.hp -= ex_dmg; g.boss.stun(1.2); g.boss.flash_until = now + 0.8
+    play(SND_FINAL)
+    _dmg_msg(g, ex_dmg, (200,100,255))
+    g.add_msg("EXECUTION!", 1.2, g.mw//2, g.mh//2-1, (180,80,240))
+    for _ in range(12):
+        ang = random.uniform(0, math.pi*2)
+        g.particles.append(Particle(g.boss.x, g.boss.y,
+            math.cos(ang)*5, math.sin(ang)*2.5, chr(9670), (180,80,240), 0.6))
+
+def do_parry(g):
+    # opens a 0.8s counter window. next boss hit: reflect full damage + stun.
+    now = time.time()
+    g.move_cds_end[2] = now + g.cd(2)
+    g.parry_window = True
+    g.parry_window_start = now
+    g.add_msg("PARRY ready...", 0.8, g.mw//2, g.mh//2-1, (200,160,255))
+
+def do_chain_drag(g):
+    # drag boss to within melee range (3 units away from player).
+    now = time.time()
+    if not g.boss.alive:
+        g.add_msg("No target!", 0.8, g.mw//2, g.mh//2-1, (200,200,100)); return
+    g.move_cds_end[3] = now + g.cd(3)
+    dx = g.px - g.boss.x; dy = g.py - g.boss.y
+    d = math.hypot(dx, dy) or 1
+    # pull boss to exactly 2 units away
+    g.boss.x = g.px - (dx/d)*2.2
+    g.boss.y = g.py - (dy/d)*1.1
+    g.boss.stun(0.5); g.boss.flash_until = now + 0.2
+    dmg = int(10 * g.dmg_mult)
+    g.boss.hp -= dmg; _dmg_msg(g, dmg, (140,80,220))
+    g.add_msg("DRAGGED!", 0.7, g.mw//2, g.mh//2, (140,80,220))
+    for _ in range(6):
+        ang = random.uniform(0, math.pi*2)
+        g.particles.append(Particle(g.boss.x, g.boss.y,
+            math.cos(ang)*3, math.sin(ang)*1.5, '+', (120,60,180), 0.4))
+
+def do_execution(g):
+    # manual execution — only usable if sentence_stacks > 0.
+    now = time.time()
+    if not g.boss.alive:
+        g.add_msg("No target!", 0.8, g.mw//2, g.mh//2-1, (200,200,100)); return
+    if g.sentence_stacks == 0:
+        g.add_msg("No stacks!", 0.8, g.mw//2, g.mh//2, (200,100,80)); return
+    # no cooldown on move 4 — it's gated by stacks instead
+    _do_execution_burst(g, now)
+
+def do_guillotine(g):
+    # ult: deals 8 * total_sentences damage — scales with every stack ever landed.
+    now = time.time()
+    if not g.can_ult():
+        g.add_msg("Need <50% HP!", 1.0, g.mw//2, g.mh//2, (255,80,80)); return
+    if not g.boss.alive:
+        g.add_msg("No target!", 0.8, g.mw//2, g.mh//2-1, (200,200,100)); return
+    g.move_cds_end[5] = now + g.cd(5)
+    dmg = int(8 * max(1, g.total_sentences) * g.dmg_mult)
+    g.boss.hp -= dmg; g.boss.stun(2.0); g.boss.flash_until = now + 1.0
+    _dmg_msg(g, dmg, (200,80,255))
+    g.add_msg(f"GUILLOTINE! ({g.total_sentences} stacks)", 1.5, g.mw//2, g.mh//2-1, (200,80,255))
+    play(SND_ULT)
+    for _ in range(20):
+        ang = random.uniform(0, math.pi*2)
+        g.particles.append(Particle(g.boss.x, g.boss.y,
+            math.cos(ang)*7, math.sin(ang)*3.5, chr(9670), (180,60,240), 0.9))
+
+
+# ── glasswright ───────────────────────────────────────────────────────────────
+# places stained glass panes as solid terrain (up to 4).
+# shattering a pane creates a bleed shard zone.
+# prism blast fires projectiles through every active pane.
+# grand facade ult: coat the arena border in panes.
+
+def do_glass_shiv(g):
+    now = time.time()
+    if not g.boss.alive or g.dist_boss() > 2.5 + g.hit_range_bonus:
+        g.add_msg("Out of range!", 0.8, g.mw//2, g.mh//2-1, (200,200,100)); return
+    g.move_cds_end[1] = now + g.cd(1)
+    dmg = int(10 * g.dmg_mult)
+    # bonus damage if boss is standing in a shard zone
+    in_shard = any(math.hypot(g.boss.x-sx, g.boss.y-sy) < 2 for sx,sy,_ in g.glass_shards)
+    if in_shard:
+        dmg = int(dmg * 1.5)
+        g.add_msg("BLEEDING!", 0.5, int(g.boss.x), int(g.boss.y)-2, (180,230,255))
+    g.boss.hp -= dmg; g.boss.flash_until = now + 0.15
+    play(SND_HIT); _dmg_msg(g, dmg, (160,220,240))
+
+def do_place_pane(g):
+    now = time.time()
+    if len(g.glass_panes) >= 4:
+        g.add_msg("Max 4 panes!", 0.8, g.mw//2, g.mh//2, (200,180,80)); return
+    g.move_cds_end[2] = now + g.cd(2)
+    # place pane 3 units ahead of player toward boss
+    if g.boss.alive:
+        dx = g.boss.x - g.px; dy = g.boss.y - g.py
+        d = math.hypot(dx, dy) or 1
+        px2 = int(max(2, min(g.mw-3, g.px + (dx/d)*3)))
+        py2 = int(max(2, min(g.mh-3, g.py + (dy/d)*1.5)))
+    else:
+        px2 = int(g.px) + 3; py2 = int(g.py)
+    g.glass_panes.append([px2, py2, 30, None])  # 30 hp before shattering
+    g.add_msg("Pane placed.", 0.6, g.mw//2, g.mh//2, (160,220,240))
+
+def do_shatter(g):
+    # manually shatter the nearest pane for shard splash.
+    now = time.time()
+    if not g.glass_panes:
+        g.add_msg("No panes!", 0.8, g.mw//2, g.mh//2, (200,180,80)); return
+    g.move_cds_end[3] = now + g.cd(3)
+    # find closest pane to player
+    closest = min(g.glass_panes, key=lambda p: math.hypot(g.px-p[0], g.py-p[1]))
+    g.glass_panes.remove(closest)
+    px2, py2 = closest[0], closest[1]
+    # bleed zone lasts 3s
+    g.glass_shards.append((px2, py2, now + 3.0))
+    # burst particles
+    for _ in range(10):
+        ang = random.uniform(0, math.pi*2)
+        g.particles.append(Particle(px2, py2, math.cos(ang)*4, math.sin(ang)*2,
+                                    '+', (160,220,240), 0.5))
+    # immediate dmg if boss nearby
+    if g.boss.alive and math.hypot(g.boss.x-px2, g.boss.y-py2) < 3:
+        dmg = int(20 * g.dmg_mult)
+        g.boss.hp -= dmg; g.boss.flash_until = now + 0.3
+        _dmg_msg(g, dmg, (160,220,240))
+
+def do_prism_blast(g):
+    # fires a beam from the player through every active pane toward the boss.
+    now = time.time()
+    if not g.glass_panes:
+        g.add_msg("No panes to refract!", 0.8, g.mw//2, g.mh//2, (200,180,80)); return
+    if not g.boss.alive:
+        g.add_msg("No target!", 0.8, g.mw//2, g.mh//2-1, (200,200,100)); return
+    g.move_cds_end[4] = now + g.cd(4)
+    hit_count = 0
+    for pane in g.glass_panes:
+        px2, py2 = pane[0], pane[1]
+        # fire projectile from pane toward boss
+        g.projectiles.append(Projectile(px2, py2, g.boss.x, g.boss.y,
+                                         20, '*', (160,230,255),
+                                         int(15*g.dmg_mult), 'player'))
+        hit_count += 1
+    if hit_count:
+        g.add_msg(f"PRISM x{hit_count}!", 0.8, g.mw//2, g.mh//2, (160,230,255))
+
+def do_grand_facade(g):
+    # ult: place panes around the entire arena border, trapping boss inside ring of glass.
+    now = time.time()
+    if not g.can_ult():
+        g.add_msg("Need <50% HP!", 1.0, g.mw//2, g.mh//2, (255,80,80)); return
+    g.move_cds_end[5] = now + g.cd(5)
+    g.glass_panes.clear()
+    # place 8 panes evenly spaced around the border
+    border_pts = []
+    for i in range(8):
+        ang = i * math.pi / 4
+        bx = int(g.mw//2 + math.cos(ang) * (g.mw//2 - 4) * 0.8)
+        by = int(g.mh//2 + math.sin(ang) * (g.mh//2 - 3) * 0.7)
+        bx = max(2, min(g.mw-3, bx)); by = max(2, min(g.mh-3, by))
+        border_pts.append([bx, by, 30, None])
+    g.glass_panes = border_pts
+    play(SND_ULT)
+    g.add_msg("GRAND FACADE!", 1.5, g.mw//2, g.mh//2-1, (180,240,255))
+
+
+# ── bellwether ────────────────────────────────────────────────────────────────
+# summons ghostly followers (up to 5). rally cry sends them charging at the boss.
+# dispatch toggles wall mode (followers form a line between player and boss).
+# martyrdom sacrifices the lowest-hp follower for burst damage.
+# the charge ult: all followers rush simultaneously, each dealing full damage.
+
+_FOLLOWER_SPEED = 5.0
+_FOLLOWER_DMG   = 12
+
+def _tick_followers(g, dt, now):
+    # called from update_game. advance follower positions and handle attacks.
+    for f in g.followers:
+        if f[2] == 'dead': continue
+        if f[2] == 'charging' and g.boss.alive:
+            dx = g.boss.x - f[0]; dy = g.boss.y - f[1]
+            d = math.hypot(dx, dy) or 1
+            if d < 1.5:
+                # melee hit
+                dmg = int(_FOLLOWER_DMG * g.dmg_mult)
+                g.boss.hp -= dmg; g.boss.flash_until = now + 0.15
+                _dmg_msg(g, dmg, (200,180,80))
+                f[2] = 'idle'
+                f[0] = g.px + random.uniform(-4, 4)
+                f[1] = g.py + random.uniform(-2, 2)
+            else:
+                f[0] += (dx/d) * _FOLLOWER_SPEED * dt
+                f[1] += (dy/d) * _FOLLOWER_SPEED * dt * 0.5
+        elif f[2] == 'wall':
+            # drift toward a position between player and boss
+            if g.boss.alive:
+                idx = g.followers.index(f)
+                n = max(1, len(g.followers))
+                t_wall = (idx + 1) / (n + 1)
+                wx = g.px + (g.boss.x - g.px) * t_wall
+                wy = g.py + (g.boss.y - g.py) * t_wall
+                dx = wx - f[0]; dy = wy - f[1]
+                d = math.hypot(dx, dy) or 1
+                if d > 0.5:
+                    f[0] += (dx/d) * _FOLLOWER_SPEED * dt
+                    f[1] += (dy/d) * _FOLLOWER_SPEED * dt * 0.5
+        elif f[2] == 'idle':
+            # loosely orbit the player
+            idx = g.followers.index(f)
+            ang = now * 0.8 + idx * (math.pi * 2 / max(1, len(g.followers)))
+            tx = g.px + math.cos(ang) * 3
+            ty = g.py + math.sin(ang) * 1.5
+            dx = tx - f[0]; dy = ty - f[1]
+            d = math.hypot(dx, dy) or 1
+            if d > 0.3:
+                f[0] += (dx/d) * _FOLLOWER_SPEED * 0.5 * dt
+                f[1] += (dy/d) * _FOLLOWER_SPEED * 0.5 * dt
+
+def do_summon(g):
+    now = time.time()
+    if len([f for f in g.followers if f[2]!='dead']) >= 5:
+        g.add_msg("Max 5 followers!", 0.8, g.mw//2, g.mh//2, (200,180,80)); return
+    g.move_cds_end[1] = now + g.cd(1)
+    fx = g.px + random.uniform(-3, 3)
+    fy = g.py + random.uniform(-1.5, 1.5)
+    g.followers.append([fx, fy, 'idle', 0.0, 0.0, 20])
+    count = len([f for f in g.followers if f[2]!='dead'])
+    g.add_msg(f"Follower summoned ({count}/5)", 0.7, g.mw//2, g.mh//2, (200,180,80))
+
+def do_rally_cry(g):
+    # send all idle followers charging at the boss.
+    now = time.time()
+    if not g.boss.alive:
+        g.add_msg("No target!", 0.8, g.mw//2, g.mh//2-1, (200,200,100)); return
+    g.move_cds_end[2] = now + g.cd(2)
+    rallied = 0
+    for f in g.followers:
+        if f[2] != 'dead':
+            f[2] = 'charging'
+            rallied += 1
+    if rallied:
+        g.add_msg(f"RALLY! ({rallied} charging)", 0.9, g.mw//2, g.mh//2, (220,200,80))
+    else:
+        g.add_msg("No followers!", 0.8, g.mw//2, g.mh//2, (180,100,80))
+
+def do_dispatch(g):
+    # toggle wall mode: followers form a barrier between player and boss.
+    now = time.time()
+    g.move_cds_end[3] = now + g.cd(3)
+    g.wall_mode = not g.wall_mode
+    mode = 'wall' if g.wall_mode else 'idle'
+    for f in g.followers:
+        if f[2] != 'dead':
+            f[2] = mode
+    g.add_msg("Wall!" if g.wall_mode else "Stand down.", 0.7, g.mw//2, g.mh//2, (200,180,80))
+
+def do_martyrdom(g):
+    # sacrifice the lowest-hp follower for burst damage.
+    now = time.time()
+    alive = [f for f in g.followers if f[2]!='dead']
+    if not alive:
+        g.add_msg("No followers!", 0.8, g.mw//2, g.mh//2, (180,100,80)); return
+    if not g.boss.alive:
+        g.add_msg("No target!", 0.8, g.mw//2, g.mh//2-1, (200,200,100)); return
+    g.move_cds_end[4] = now + g.cd(4)
+    victim = min(alive, key=lambda f: f[5])
+    victim[2] = 'dead'
+    dmg = int(50 * g.dmg_mult)
+    g.boss.hp -= dmg; g.boss.flash_until = now + 0.5; g.boss.stun(0.6)
+    _dmg_msg(g, dmg, (220,200,80))
+    g.add_msg("MARTYRDOM!", 1.0, g.mw//2, g.mh//2, (220,200,80))
+    for _ in range(10):
+        ang = random.uniform(0, math.pi*2)
+        g.particles.append(Particle(victim[0], victim[1],
+                                    math.cos(ang)*5, math.sin(ang)*2.5, '*', (220,200,80), 0.6))
+    g.followers = [f for f in g.followers if f[2]!='dead']
+
+def do_the_charge(g):
+    # ult: all followers rush boss simultaneously, each dealing full execution damage.
+    now = time.time()
+    if not g.can_ult():
+        g.add_msg("Need <50% HP!", 1.0, g.mw//2, g.mh//2, (255,80,80)); return
+    if not g.boss.alive:
+        g.add_msg("No target!", 0.8, g.mw//2, g.mh//2-1, (200,200,100)); return
+    g.move_cds_end[5] = now + g.cd(5)
+    alive = [f for f in g.followers if f[2]!='dead']
+    total_dmg = 0
+    for f in alive:
+        f[2] = 'charging'
+        dmg = int(35 * g.dmg_mult)
+        total_dmg += dmg
+    if total_dmg > 0:
+        g.boss.hp -= total_dmg; g.boss.stun(2.0); g.boss.flash_until = now + 1.0
+        _dmg_msg(g, total_dmg, (220,200,80))
+        g.add_msg(f"THE CHARGE! {total_dmg} dmg", 1.5, g.mw//2, g.mh//2-1, (240,220,80))
+    else:
+        g.add_msg("No followers to charge!", 0.8, g.mw//2, g.mh//2, (180,100,80))
+    play(SND_ULT)
+
+
+# ── ashwalker ─────────────────────────────────────────────────────────────────
+# every tile the player occupies becomes an ember (expires after 2s).
+# ignition doubles burn damage on all active tiles for 2s.
+# backdraft fires ember particles radially, scattering burning tiles.
+# ember step (move 4) is a passive toggle — always active, no cd.
+# conflagration ult: reignite ALL charted ember tiles for 4s simultaneously.
+
+_EMBER_DURATION = 2.0   # seconds a tile stays hot
+_EMBER_DMG      = 3     # damage per tick to boss standing on ember
+_EMBER_TICK     = 0.5   # how often ember deals damage
+
+def _tick_embers(g, dt, now):
+    # expire old embers, then deal tick damage to boss if it overlaps any ember.
+    g.ember_tiles = {pos: exp for pos, exp in g.ember_tiles.items() if exp > now}
+    if not g.boss.alive: return
+    bpos = (int(g.boss.x), int(g.boss.y))
+    # check a small radius around boss body
+    for (ex, ey), exp in list(g.ember_tiles.items()):
+        if math.hypot(g.boss.x - ex, g.boss.y - ey) < 1.5:
+            if not hasattr(g, '_ember_dmg_next'): g._ember_dmg_next = {}
+            key = (ex, ey)
+            if now >= g._ember_dmg_next.get(key, 0):
+                g._ember_dmg_next[key] = now + _EMBER_TICK
+                mult = 2.0 if g.ignition_active else 1.0
+                dmg = int(_EMBER_DMG * mult * g.dmg_mult)
+                g.boss.hp -= dmg
+                g.boss.flash_until = now + 0.05
+
+def _place_ember(g, x, y, now, duration=None):
+    dur = duration or _EMBER_DURATION
+    if g.ignition_active:
+        dur *= 2
+    g.ember_tiles[(int(x), int(y))] = now + dur
+
+def do_cinder_strike(g):
+    now = time.time()
+    if not g.boss.alive or g.dist_boss() > 2.5 + g.hit_range_bonus:
+        g.add_msg("Out of range!", 0.8, g.mw//2, g.mh//2-1, (200,200,100)); return
+    g.move_cds_end[1] = now + g.cd(1)
+    dmg = int(12 * g.dmg_mult)
+    # bonus if boss is standing on an ember
+    bpos = (int(g.boss.x), int(g.boss.y))
+    on_ember = any(math.hypot(g.boss.x-ex, g.boss.y-ey) < 1.5
+                   for ex,ey in g.ember_tiles)
+    if on_ember:
+        dmg = int(dmg * 1.4)
+    g.boss.hp -= dmg; g.boss.flash_until = now + 0.2
+    play(SND_HIT); _dmg_msg(g, dmg, (220,120,40))
+    # leave ember at boss position
+    _place_ember(g, g.boss.x, g.boss.y, now)
+
+def do_ignition(g):
+    # double the damage and duration of all active embers for 2s.
+    now = time.time()
+    g.move_cds_end[2] = now + g.cd(2)
+    g.ignition_active = True
+    g.ignition_until = now + 2.0
+    g.add_msg("IGNITION!", 0.8, g.mw//2, g.mh//2, (255,140,40))
+    # also refresh all existing ember durations
+    for pos in list(g.ember_tiles.keys()):
+        g.ember_tiles[pos] = max(g.ember_tiles[pos], now + _EMBER_DURATION)
+
+def do_backdraft(g):
+    # scatter embers radially: fire 8 ember projectiles from player position.
+    now = time.time()
+    g.move_cds_end[3] = now + g.cd(3)
+    for i in range(8):
+        ang = i * math.pi / 4 + random.uniform(-0.1, 0.1)
+        vx = math.cos(ang) * 6; vy = math.sin(ang) * 3
+        # create a particle that also plants an ember at its landing spot
+        tx = int(max(1, min(g.mw-2, g.px + math.cos(ang)*5)))
+        ty = int(max(1, min(g.mh-2, g.py + math.sin(ang)*2.5)))
+        _place_ember(g, tx, ty, now)
+        g.particles.append(Particle(g.px, g.py, vx, vy, '*', (220,120,40), 0.5))
+    g.add_msg("Backdraft!", 0.6, g.mw//2, g.mh//2, (220,120,40))
+
+def do_ember_step(g):
+    # move 4 is a manual ember drop at current position (no passive auto-place yet).
+    now = time.time()
+    _place_ember(g, g.px, g.py, now, duration=_EMBER_DURATION * 2)
+    g.add_msg("Ember dropped.", 0.4, g.mw//2, g.mh//2, (180,90,30))
+
+def do_conflagration(g):
+    # ult: reignite ALL current ember tiles simultaneously for 4s.
+    now = time.time()
+    if not g.can_ult():
+        g.add_msg("Need <50% HP!", 1.0, g.mw//2, g.mh//2, (255,80,80)); return
+    g.move_cds_end[5] = now + g.cd(5)
+    if not g.ember_tiles:
+        g.add_msg("No embers on the map!", 1.0, g.mw//2, g.mh//2, (200,120,60)); return
+    tile_count = len(g.ember_tiles)
+    # reignite every tile for 4s
+    for pos in list(g.ember_tiles.keys()):
+        g.ember_tiles[pos] = now + 4.0
+    # also lay embers on a ring around player for extra area
+    for i in range(12):
+        ang = i * math.pi / 6
+        tx = int(max(1, min(g.mw-2, g.px + math.cos(ang)*4)))
+        ty = int(max(1, min(g.mh-2, g.py + math.sin(ang)*2)))
+        _place_ember(g, tx, ty, now, 4.0)
+        g.particles.append(Particle(g.px, g.py,
+                                    math.cos(ang)*5, math.sin(ang)*2.5,
+                                    chr(9733), (255,140,40), 0.7))
+    play(SND_ULT)
+    g.add_msg(f"CONFLAGRATION! {tile_count} tiles", 1.5, g.mw//2, g.mh//2-1, (255,140,40))
+
 def _dmg_msg(g, dmg, clr):
     g.add_msg(f"-{dmg}",0.7,int(g.boss.x),int(g.boss.y)-1,clr)
 
@@ -1013,6 +1489,35 @@ def update_game(g, dt):
 
     # strings (marionette)
     g.strings=[s for s in g.strings if s.alive()]
+
+    # undertaker: expire parry window after 0.8s
+    if g.cls_name=="undertaker" and g.parry_window and now - g.parry_window_start >= 0.8:
+        g.parry_window = False
+        g.add_msg("Parry missed.", 0.4, g.mw//2, g.mh//2, (120,80,160))
+
+    # bellwether: tick followers every frame
+    if g.cls_name=="bellwether":
+        _tick_followers(g, dt, now)
+
+    # ashwalker: auto-place ember on current tile, tick ember damage, expire ignition
+    if g.cls_name=="ashwalker":
+        _place_ember(g, g.px, g.py, now)
+        _tick_embers(g, dt, now)
+        if g.ignition_active and now >= g.ignition_until:
+            g.ignition_active = False
+
+    # glasswright: expire shards, apply shard damage if boss walks over them
+    if g.cls_name=="glasswright":
+        g.glass_shards = [(sx,sy,exp) for sx,sy,exp in g.glass_shards if exp>now]
+        if g.boss.alive:
+            for sx,sy,_ in g.glass_shards:
+                if math.hypot(g.boss.x-sx, g.boss.y-sy) < 1.5:
+                    if not hasattr(g,'_shard_dmg_next'): g._shard_dmg_next = {}
+                    key=(sx,sy)
+                    if now >= g._shard_dmg_next.get(key,0):
+                        g._shard_dmg_next[key]=now+0.5
+                        dmg=int(5*g.dmg_mult)
+                        g.boss.hp-=dmg; g.boss.flash_until=now+0.05
     if g.redirect_ready and now>g.redirect_expires: g.redirect_ready=False
 
     # quicksand/terrain walls
@@ -1369,14 +1874,29 @@ def update_game(g, dt):
                         if math.hypot(g.px - tx2, g.py - ty2) < 2.0:
                             if not g.is_stunned() and now > g.gd_invincible_until:
                                 g.take_damage(int(g.boss.damage * 1.5))
-                                # rebound: continue past player to far wall
-                                p['rebound_target'] = (g.mw - int(g.boss.x), g.mh//2)
+                                # rebound: shoot past the player in the same direction
+                                dx_rb = tx2 - p['origin'][0]; dy_rb = ty2 - p['origin'][1]
+                                d_rb = math.hypot(dx_rb, dy_rb) or 1
+                                p['rebound_target'] = (
+                                    max(2, min(g.mw-4, tx2 + (dx_rb/d_rb)*8)),
+                                    max(2, min(g.mh-3, ty2 + (dy_rb/d_rb)*4))
+                                )
+                                p['rebound_start'] = now
                             else:
-                                # miss: stun the hound
+                                # miss: stun the hound briefly
                                 g.boss.stun(1.5)
                                 g.add_msg("MISSED!", 1.0, g.mw//2, g.mh//2, (180,140,220))
                         else:
                             g.boss.stun(1.5)
+                elif p.get('rebound_target'):
+                    # execute the rebound slide
+                    rb_progress = min(1.0, (now - p['rebound_start']) / 0.25)
+                    ox2, oy2 = p['origin']
+                    rtx, rty = p['rebound_target']
+                    g.boss.x = tx2 + (rtx - tx2) * rb_progress
+                    g.boss.y = ty2 + (rty - ty2) * rb_progress
+                    if rb_progress >= 1.0:
+                        g.boss.hound_pounce = None
                 else:
                     g.boss.hound_pounce = None
             # puppies drift toward player and chip damage
@@ -1394,6 +1914,9 @@ def update_game(g, dt):
 
         # boss7 liminal: two hp bars, cross-healing, convergence beams, merge attempt.
         if g.boss.key=="boss7":
+            # track hp at start of frame to detect damage dealt this tick.
+            # used to credit merge_interrupt_dmg without patching every damage callsite.
+            liminal_hp_before = g.boss.light_hp + g.boss.void_hp
             # sync combined hp for death check
             g.boss.hp = g.boss.light_hp + g.boss.void_hp
             # convergence beams every 5s: two beams from opposite sides meeting in the middle
@@ -1422,6 +1945,11 @@ def update_game(g, dt):
                 g.boss.merge_interrupt_dmg = 0
                 g.add_msg("MERGE INCOMING! Deal 80 dmg to interrupt!", 2.0,
                           g.mw//2, g.mh//2-3, (200,100,255))
+            # credit any damage dealt this frame toward merge interrupt
+            liminal_hp_after = g.boss.light_hp + g.boss.void_hp
+            if g.boss.merge_active and liminal_hp_after < liminal_hp_before:
+                g.boss.merge_interrupt_dmg += liminal_hp_before - liminal_hp_after
+
             # merge in progress
             if g.boss.merge_active:
                 if g.boss.merge_interrupt_dmg >= 80:
@@ -1608,7 +2136,20 @@ def update_game(g, dt):
             if now>=g.boss.hit_landing:
                 if g.boss.hit_target:
                     if math.hypot(g.px-g.boss.hit_target[0],g.py-g.boss.hit_target[1])<1.5:
-                        if g.hijack_active:
+                        if g.parry_window and g.cls_name=="undertaker":
+                            # undertaker parry: full counter-reflect + stun
+                            g.parry_window = False
+                            counter_dmg = int(g.boss.damage * 2.0 * g.dmg_mult)
+                            g.boss.hp -= counter_dmg
+                            g.boss.stun(1.5); g.boss.flash_until = now + 0.6
+                            _dmg_msg(g, counter_dmg, (180,80,240))
+                            g.add_msg("PARRY COUNTER!", 1.2, g.mw//2, g.mh//2, (180,80,240))
+                            # bonus: add a sentence stack from the counter
+                            g.sentence_stacks += 1
+                            g.total_sentences += 1
+                            if g.sentence_stacks >= 5:
+                                _do_execution_burst(g, now)
+                        elif g.hijack_active:
                             # siphon hijack: absorb the hit as a stored charge
                             g.hijack_active = False
                             if len(g.siphon_charges) < 3:
@@ -1952,6 +2493,52 @@ def render_game(g, out_buf):
             put(sx+1,sy,chr(92),lerp((40,20,60),sc,t2*0.5))
             put(sx,sy-1,'^',lerp((40,20,60),sc,t2*0.5))
             put(sx,sy+1,'v',lerp((40,20,60),sc,t2*0.5))
+
+    # undertaker: show sentence stacks above boss as tally marks
+    if g.cls_name=="undertaker" and g.sentence_stacks>0 and g.boss.alive:
+        tally = "I"*g.sentence_stacks
+        bxi=int(g.boss.x)-len(tally)//2
+        put(bxi, int(g.boss.y)-3, tally[0] if len(tally)==1 else tally[:5], (160,80,220))
+
+    # glasswright: draw panes as [ ] and shard zones as , clusters
+    if g.cls_name=="glasswright":
+        for pane in g.glass_panes:
+            px2,py2=pane[0],pane[1]
+            t2=(math.sin(now*2+px2*0.3)+1)/2
+            pc=lerp((100,180,210),(200,240,255),t2)
+            put(px2,py2,'[',pc); put(px2+1,py2,']',pc)
+        for sx,sy,exp in g.glass_shards:
+            age_frac = 1.0-(exp-now)/3.0
+            sc=lerp((140,200,240),(60,80,100),age_frac)
+            put(sx,sy,',',sc)
+            if sx+1<mw: put(sx+1,sy,'.',sc)
+
+    # bellwether: draw followers as ghostly @ symbols orbiting player
+    if g.cls_name=="bellwether":
+        for f in g.followers:
+            if f[2]=='dead': continue
+            fx,fy=int(f[0]),int(f[1])
+            if 1<=fx<mw-1 and 1<=fy<mh-1:
+                t2=(math.sin(now*2+f[0]*0.5)+1)/2
+                fc2=lerp((120,100,40),(220,200,80),t2)
+                if f[2]=='charging':
+                    fc2=(255,200,50)
+                elif f[2]=='wall':
+                    fc2=(200,180,60)
+                put(fx,fy,'@',fc2)
+
+    # ashwalker: draw ember tiles as glowing floor
+    if g.cls_name=="ashwalker":
+        for (ex,ey),exp in g.ember_tiles.items():
+            if 1<=ex<mw-1 and 1<=ey<mh-1:
+                age = 1.0 - (exp-now)/_EMBER_DURATION
+                age = max(0.0,min(1.0,age))
+                t2=(math.sin(now*4+ex*0.2+ey*0.15)+1)/2
+                base_clr=lerp((200,80,20),(255,160,40),t2)
+                ec=lerp(base_clr,(40,20,10),age*0.6)
+                if getattr(g,'ignition_active',False):
+                    ec=lerp(ec,(255,220,80),0.5)
+                put(ex,ey,chr(9632) if t2>0.6 else '.',ec)
 
     # charted tiles (cartographer)
     for (tx,ty) in g.charted:
@@ -2317,21 +2904,24 @@ def render_game(g, out_buf):
         php=f"HP:{g.hp}/{g.max_hp}"
 
     # boss7 liminal: show two separate hp bars for light and void halves.
-    # hud_y is not yet defined here so compute it directly from offset_y and mh.
+    # colors are fully static — no time-based animation to prevent flickering.
     if g.boss.key=="boss7" and g.boss.alive:
         liminal_hud_y = offset_y + mh
         lhp = max(0, g.boss.light_hp); vhp = max(0, g.boss.void_hp)
         bar_len = 20
         l_fill = int(bar_len * lhp / max(1, g.boss.max_hp // 2))
         v_fill = int(bar_len * vhp / max(1, g.boss.max_hp // 2))
-        l_bar = fg(220,200,80) + "LIGHT[" + "█"*l_fill + "░"*(bar_len-l_fill) + "]" + RST
-        v_bar = fg(120,60,200) + "VOID[" + "█"*v_fill + "░"*(bar_len-v_fill) + "]" + RST
-        bx_r = offset_x + mw - 50
+        l_bar = fg(220,200,80) + "LIGHT[" + fg(200,180,60) + "█"*l_fill + fg(60,55,30) + "░"*(bar_len-l_fill) + fg(220,200,80) + "]" + RST
+        v_bar = fg(140,80,220) + "VOID["  + fg(120,60,200) + "█"*v_fill  + fg(40,25,65) + "░"*(bar_len-v_fill)  + fg(140,80,220) + "]" + RST
+        bx_r = offset_x + mw - 52
         out += at(bx_r, liminal_hud_y+1) + l_bar + "  " + v_bar
         if g.boss.merge_active:
-            t2 = (math.sin(now*8)+1)/2
-            mc = lerp((150,60,200),(255,150,255),t2)
-            out += at(bx_r, liminal_hud_y+2) + fg(*mc) + BOLD + "MERGING! Deal 80 dmg to stop!" + RST
+            # slow pulse (1.5 Hz) so the warning is readable, not seizure-inducing
+            t2 = (math.sin(now*1.5)+1)/2
+            mc = lerp((160,80,210),(220,140,255),t2)
+            prog = min(1.0, (now - g.boss.merge_start) / 5.0)
+            prog_bar = "█"*int(prog*20) + "░"*(20-int(prog*20))
+            out += at(bx_r, liminal_hud_y+2) + fg(*mc) + BOLD + f"MERGING [{prog_bar}] Deal 80 dmg!" + RST
 
     # boss hp — fixed width to avoid bleed
     if g.boss.alive:
@@ -2412,6 +3002,44 @@ def render_game(g, out_buf):
         if g.siphon_leech_active:
             leech_left = max(0.0, g.siphon_leech_expires - now2)
             out += at(offset_x+2, hud_y+3) + fg(60,180,160) + f"LEECH: {leech_left:.1f}s" + RST
+
+    # undertaker hud: sentence stack counter and total lifetime stacks
+    if g.cls_name=="undertaker":
+        stk_str = "SENTENCE: " + chr(9632)*g.sentence_stacks + chr(9633)*(5-g.sentence_stacks)
+        stk_clr = lerp((100,60,160),(200,100,255), g.sentence_stacks/5)
+        out += at(offset_x+2, hud_y+1) + fg(*stk_clr) + stk_str + RST
+        out += at(offset_x+2, hud_y+2) + fg(80,60,100) + f"Total sentenced: {g.total_sentences}" + RST
+        if g.parry_window:
+            t2=(math.sin(now2*6)+1)/2
+            pc=lerp((140,80,200),(220,160,255),t2)
+            out += at(offset_x+2, hud_y+3) + fg(*pc) + BOLD + "PARRY WINDOW!" + RST
+
+    # glasswright hud: pane count and shard count
+    if g.cls_name=="glasswright":
+        pane_str = "PANES: " + chr(9632)*len(g.glass_panes) + chr(9633)*(4-len(g.glass_panes))
+        out += at(offset_x+2, hud_y+1) + fg(140,210,230) + pane_str + RST
+        if g.glass_shards:
+            out += at(offset_x+2, hud_y+2) + fg(80,140,160) + f"Shards: {len(g.glass_shards)} active" + RST
+
+    # bellwether hud: follower count and state
+    if g.cls_name=="bellwether":
+        alive_f = [f for f in g.followers if f[2]!='dead']
+        f_str = f"FOLLOWERS: {len(alive_f)}/5"
+        f_clr = lerp((100,80,30),(220,200,70), len(alive_f)/5)
+        out += at(offset_x+2, hud_y+1) + fg(*f_clr) + f_str + RST
+        if g.wall_mode:
+            out += at(offset_x+2, hud_y+2) + fg(180,160,50) + "WALL MODE" + RST
+
+    # ashwalker hud: ember tile count and ignition status
+    if g.cls_name=="ashwalker":
+        e_count = len(g.ember_tiles)
+        e_str = f"EMBERS: {e_count}"
+        e_clr = lerp((120,60,20),(255,160,40), min(1.0, e_count/20))
+        out += at(offset_x+2, hud_y+1) + fg(*e_clr) + e_str + RST
+        if g.ignition_active:
+            t2=(math.sin(now2*3)+1)/2
+            ic=lerp((200,100,30),(255,200,50),t2)
+            out += at(offset_x+2, hud_y+2) + fg(*ic) + BOLD + "IGNITION!" + RST
 
     # beat bar for the hollow conductor. shows the current beat phase as a fill bar.
     # the bar fills faster as hp drops due to crescendo. when a trill is active,
