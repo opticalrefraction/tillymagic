@@ -114,6 +114,12 @@ class Boss:
         # attack animation
         self.atk_anim = None  # 'slam','stomp','thrust','baton' etc
         self.atk_anim_start = 0
+        # phase flash: brief full-body color override for dramatic transitions
+        self.phase_flash_until = 0.0
+        self.phase_flash_color = (255,255,255)
+        # death sequence: dissolving body over 1.2s before victory fires
+        self.dying = False
+        self.death_start = 0.0
         # boss3 water jets
         self.water_jets = []
         self.last_jet = 0
@@ -523,6 +529,7 @@ class Game:
         absorbed = min(dmg, dmg*self.absorb)
         actual = int(dmg - absorbed)
         self.hp -= actual
+        self._dmg_flash_until = time.time() + 0.3  # red flash on player char
         self.add_msg(f"-{actual}", 0.7, int(self.px), int(self.py)-1, (255,80,80))
         if self.hp <= 0:
             if self.cls_name=="revenant" and self.lives>1:
@@ -730,6 +737,11 @@ def do_shovel(g):
         g.boss.y=max(2,min(g.mh-3,g.boss.y+(dy/d)*2))
         for ang in range(0,360,20):
             g.particles.append(Particle(g.px,g.py,math.cos(math.radians(ang))*6,math.sin(math.radians(ang))*3,'+',(230,230,200),0.35))
+        # directional sparks kick back at player from impact point
+        for _ in range(6):
+            ang_s=math.atan2(g.py-g.boss.y,g.px-g.boss.x)+random.uniform(-0.7,0.7)
+            g.particles.append(Particle(g.boss.x,g.boss.y,math.cos(ang_s)*8*1.5,math.sin(ang_s)*8*0.7,
+                                        '*',(220,180,60),0.3))
         play(SND_FINAL); _dmg_msg(g,dmg,(200,160,80))
         g.combo_state=0; g.combo_ready=now+0.7
         g.combo_lockout_until = now + 4.0
@@ -799,6 +811,13 @@ def do_silk_strike(g):
         g.boss.hp-=reflect; _dmg_msg(g,reflect,(255,100,200))
     if final:
         g.combo_state=0; g.combo_ready=now+0.7; g.boss.stun(0.5)
+        sc_m = CLASS_DATA[g.cls_name]["color"]
+        for _ in range(6):
+            ang_m = math.atan2(g.py-g.boss.y,g.px-g.boss.x)+random.uniform(-1.0,1.0)
+            sp_m  = random.uniform(3,7)
+            g.particles.append(Particle(g.boss.x,g.boss.y,
+                math.cos(ang_m)*sp_m*1.5,math.sin(ang_m)*sp_m*0.65,
+                random.choice(['+','*','·']),lerp(sc_m,(255,255,200),0.35),0.28))
         g.combo_lockout_until = now + 3.0
     else: g.combo_state+=1; g.combo_ready=now+0.4*g.cd_mult; g.combo_last_hit=now
 
@@ -849,6 +868,13 @@ def do_ink_stab(g):
     play(SND_FINAL if final else SND_HIT); _dmg_msg(g,dmg,(60,200,140))
     if final:
         g.combo_state=0; g.combo_ready=now+0.7; g.boss.stun(0.5)
+        sc_c = CLASS_DATA[g.cls_name]["color"]
+        for _ in range(6):
+            ang_c = math.atan2(g.py-g.boss.y,g.px-g.boss.x)+random.uniform(-1.0,1.0)
+            sp_c  = random.uniform(3,7)
+            g.particles.append(Particle(g.boss.x,g.boss.y,
+                math.cos(ang_c)*sp_c*1.5,math.sin(ang_c)*sp_c*0.65,
+                random.choice(['+','*','·']),lerp(sc_c,(255,255,200),0.35),0.28))
         g.combo_lockout_until = now + 3.5
     else: g.combo_state+=1; g.combo_ready=now+0.35*g.cd_mult; g.combo_last_hit=now
     # mark current tile
@@ -1614,6 +1640,7 @@ def update_game(g, dt):
                     g.boss.armor-=absorbed_armor; dmg-=absorbed_armor
                     if g.boss.armor<=0 and not g.boss.phase2:
                         g.boss.phase2=True
+                        g.boss.phase_flash_until=now+0.6; g.boss.phase_flash_color=(255,230,80)
                         g.add_msg("SHELL CRACKED!",1.5,g.mw//2,g.mh//2,(255,200,50))
                 if dmg>0: g.boss.hp-=dmg; g.boss.flash_until=now+0.25; _dmg_msg(g,int(dmg),proj.clr)
                 # marionette string reflect
@@ -1623,6 +1650,14 @@ def update_game(g, dt):
                 for _ in range(4):
                     ang=random.uniform(0,math.pi*2)
                     g.particles.append(Particle(proj.x,proj.y,math.cos(ang)*4,math.sin(ang)*2,'.',proj.clr,0.25))
+                # impact sparks fly toward the player (directional feedback)
+                spark_clr = CLASS_DATA[g.cls_name]["color"]
+                for _ in range(3):
+                    # bias direction back toward player
+                    ang_b = math.atan2(g.py-proj.y, g.px-proj.x) + random.uniform(-0.8,0.8)
+                    spd_s = random.uniform(3,7)
+                    g.particles.append(Particle(proj.x,proj.y,math.cos(ang_b)*spd_s*1.5,math.sin(ang_b)*spd_s*0.7,
+                                                random.choice(['*','·','+']), spark_clr, 0.2))
                 hit=True
         if not hit: new_projs.append(proj)
     g.projectiles=new_projs
@@ -1760,10 +1795,29 @@ def update_game(g, dt):
     # boss update
     if not g.boss.alive:
         return
-    if g.boss.hp<=0:
-        g.boss.alive=False; g.victory=True
-        coins=int(BOSS_DATA[g.boss_key]["coins"]*g.coin_mult)
-        g.earned_coins=coins
+    if g.boss.hp<=0 and not g.boss.dying:
+        g.boss.dying = True
+        g.boss.death_start = now
+        g.boss.stun_until = now + 99  # freeze movement during death
+    if g.boss.dying:
+        death_age = now - g.boss.death_start
+        # scatter body cells as particles during the 1.2s dissolve
+        if random.random() < 0.6:
+            cells_d = g.boss.get_cells()
+            if cells_d:
+                cx_d, cy_d, ch_d = random.choice(cells_d)
+                ang_d = random.uniform(0, math.pi*2)
+                spd_d = random.uniform(2, 8)
+                clr_d = lerp(g.boss.color, (255,255,200), random.random())
+                g.particles.append(Particle(cx_d, cy_d,
+                    math.cos(ang_d)*spd_d*1.5, math.sin(ang_d)*spd_d*0.6,
+                    ch_d, clr_d, 0.8))
+        if death_age >= 1.2:
+            g.boss.alive = False
+            g.boss.dying = False
+            g.victory = True
+            coins = int(BOSS_DATA[g.boss_key]["coins"]*g.coin_mult)
+            g.earned_coins = coins
         return
 
     if not g.boss.is_stunned() and not g.boss.is_submerged():
@@ -1937,6 +1991,20 @@ def update_game(g, dt):
                     if abs(g.py - by1) < 1 and (min(bx1,tip_x) <= g.px <= max(bx1,tip_x)):
                         if not g.is_stunned() and now > g.gd_invincible_until:
                             g.take_damage(int(g.boss.damage * 0.4))
+                # render the beam as solid lines in the buffer with a color gradient
+                if bprog > 0.1:
+                    tip_x_r = int(bx1 + (bx2-bx1) * min(1.0, max(0,(bprog-0.1)/0.5)))
+                    intensity = min(1.0, bprog * 2)
+                    beam_clr = lerp((60,20,120),(180,80,255),intensity)
+                    tip_clr  = lerp((200,100,255),(255,180,255),intensity)
+                    x_range = range(min(bx1,tip_x_r), max(bx1,tip_x_r)+1)
+                    for bxr in x_range:
+                        dist_from_tip = abs(bxr - tip_x_r)
+                        fade = max(0, 1.0 - dist_from_tip/max(1,len(x_range)))
+                        ch_b = chr(9552) if fade > 0.6 else '='
+                        g_buf_clr = lerp(beam_clr, tip_clr, fade)
+                        if 0<=bxr<g.mw and 0<=by1<g.mh:
+                            pass  # rendered in render_game below via convergence_beams_render flag
             # merge attempt below 40% total hp
             total_hp = g.boss.light_hp + g.boss.void_hp
             if total_hp < g.boss.max_hp * 0.4 and not g.boss.merge_active and random.random() < 0.001:
@@ -1962,6 +2030,7 @@ def update_game(g, dt):
                     g.boss.hp = g.boss.light_hp + g.boss.void_hp
                     g.boss.merge_active = False
                     g.boss.hit_cd = max(0.4, g.boss.hit_cd * 0.5)
+                    g.boss.phase_flash_until=now+0.8; g.boss.phase_flash_color=(200,80,255)
                     g.add_msg("MERGED! The Liminal is enraged!", 2.0,
                               g.mw//2, g.mh//2, (200,100,255))
 
@@ -2007,6 +2076,7 @@ def update_game(g, dt):
                         and random.random() < 0.30):
                     g.boss.trill_active = True
                     g.boss.trill_phase = 'advance'
+                    g.boss.phase_flash_until = now + 0.3; g.boss.phase_flash_color = (255,60,60)
                     g.boss.trill_start = now
                     g.boss.trill_origin = (g.boss.x, g.boss.y)
                     g.boss.trill_target = (g.px, g.py)
@@ -2682,38 +2752,142 @@ def render_game(g, out_buf):
                     if random.random()<0.3:
                         g.particles.append(Particle(tx2,ty2,random.uniform(-2,2),random.uniform(-1,1),'~',(100,160,255),0.3))
 
+    # liminal convergence beams — render as extending ═ lines with glowing tip
+    if g.boss.key=="boss7" and g.boss.alive and g.boss.convergence_beams:
+        for beam in g.boss.convergence_beams:
+            bx1,by1,bx2,by2,bborn,bdur = beam
+            bprog = (now - bborn) / bdur
+            if bprog > 0.1:
+                tip_x_r = int(bx1 + (bx2-bx1) * min(1.0, max(0,(bprog-0.1)/0.5)))
+                intensity = min(1.0, bprog*2)
+                x_lo = min(bx1, tip_x_r); x_hi = max(bx1, tip_x_r)
+                span = max(1, x_hi - x_lo)
+                for bxr in range(x_lo, x_hi+1):
+                    if 0<=bxr<mw and 0<=by1<mh:
+                        dist_tip = abs(bxr - tip_x_r)
+                        fade = max(0.0, 1.0 - dist_tip/span)
+                        beam_clr = lerp((40,10,80),(160,60,220),intensity)
+                        tip_clr  = lerp((200,120,255),(255,200,255),intensity)
+                        clr_b = lerp(beam_clr, tip_clr, fade)
+                        ch_b = chr(9552) if fade > 0.5 else '='
+                        put(bxr, by1, ch_b, clr_b)
+                # glowing tip particle burst
+                if bprog > 0.3 and random.random() < 0.3:
+                    g.particles.append(Particle(tip_x_r, by1,
+                        random.uniform(-1,1), random.uniform(-0.5,0.5),
+                        chr(9830), (220,140,255), 0.25))
+        # warn text showing safe center gap
+        safe_cx = mw//2
+        if 0<=safe_cx<mw and 0<=by1<mh:
+            t_warn=(math.sin(now*4)+1)/2
+            put(safe_cx-1, by1, '<', lerp((80,200,80),(150,255,150),t_warn))
+            put(safe_cx+1, by1, '>', lerp((80,200,80),(150,255,150),t_warn))
+            put(safe_cx,   by1, ' ', (0,0,0))
+
     # boss rendering - unique per-boss shape
-    if g.boss.alive:
-        flashing=now<g.boss.flash_until
-        flash_prog=max(0,(now-(g.boss.flash_until-0.3))/0.3) if flashing else 0
-        cells=g.boss.get_cells()
+    # dying bosses still render as dissolving chars (particles handled in update_game)
+    if g.boss.alive or g.boss.dying:
+        flashing = now < g.boss.flash_until
+        flash_prog = max(0,(now-(g.boss.flash_until-0.3))/0.3) if flashing else 0
+        phase_flashing = now < g.boss.phase_flash_until
+        dying_prog = min(1.0, (now - g.boss.death_start)/1.2) if g.boss.dying else 0.0
+        cells = g.boss.get_cells()
+        # during dying: randomly skip cells so the body looks like it's breaking apart
+        if g.boss.dying:
+            keep_chance = 1.0 - dying_prog * 0.9
+            cells = [cell for cell in cells if random.random() < keep_chance]
         for cell in cells:
-            cx2,cy2,bch=cell
-            if flashing:
-                clr=lerp((255,220,50),g.boss.color,flash_prog)
+            cx2,cy2,bch = cell
+            if phase_flashing:
+                # dramatic flash overrides everything — bright burst fading back to boss color
+                pf_prog = (now - (g.boss.phase_flash_until - 0.6)) / 0.6
+                clr = lerp(g.boss.phase_flash_color, g.boss.color, max(0,pf_prog))
+            elif flashing:
+                clr = lerp((255,220,50), g.boss.color, flash_prog)
+            elif g.boss.dying:
+                # dying: shift toward white then transparent as cells fade out
+                clr = lerp(g.boss.color, (255,255,255), dying_prog*0.6)
             elif g.boss.key=="boss1":
-                # warden: deep crimson, pulses darker when winding up
-                wind=1.0 if g.boss.hit_windup is None else min(1,(now-g.boss.hit_windup)/2.0)
-                clr=lerp((180,20,20),(240,80,60),wind)
+                # warden: dark crimson idle pulse, blood-red on windup
+                wind = 1.0 if g.boss.hit_windup is None else min(1,(now-g.boss.hit_windup)/2.0)
+                idle_t = (math.sin(now*1.2 + cx2*0.15)*0.5+0.5)
+                base = lerp((120,15,15),(200,40,30),idle_t)
+                clr = lerp(base,(240,60,40),wind)
             elif g.boss.key=="boss2":
                 if g.boss.armor>0:
-                    # armoured: stone grey-brown
-                    clr=lerp((80,75,60),(200,190,140),g.boss.armor/150)
+                    # armoured: cold stone, cracks visible as darker veins
+                    idle_t = (math.sin(now*0.8 + cx2*0.2 + cy2*0.1)*0.5+0.5)
+                    clr = lerp((60,55,45),(190,180,130),idle_t*(g.boss.armor/150))
                 else:
-                    # phase 2: hot orange cracks
-                    t=(math.sin(now*4)+1)/2
-                    clr=lerp((200,80,20),(255,160,50),t)
+                    # phase 2: hot orange lava cracks, individual cell variance
+                    t = (math.sin(now*4 + cx2*0.3 + cy2*0.2)+1)/2
+                    clr = lerp((180,60,10),(255,170,40),t)
             elif g.boss.key=="boss3":
-                # tide caller: flowing blue-teal animated
-                t=(math.sin(now*2+cx2*0.3+cy2*0.2)+1)/2
-                clr=lerp((30,80,200),(80,200,255),t)
+                # tide caller: rippling blue-teal per cell, depth shimmer
+                t = (math.sin(now*2.5 + cx2*0.35 + cy2*0.25)+1)/2
+                clr = lerp((20,60,180),(60,190,255),t)
             elif g.boss.key=="boss4":
-                # hollow conductor: sickly gold with beat-pulse
-                beat_t=(math.sin(g.boss.beat_phase*math.pi*2)+1)/2
-                clr=lerp((120,100,20),(255,230,60),beat_t)
+                # conductor: gold pulse tied to beat phase, cells near center brighter
+                beat_t = (math.sin(g.boss.beat_phase*math.pi*2)+1)/2
+                dist_c = math.hypot(cx2-g.boss.x, cy2-g.boss.y)
+                center_boost = max(0, 1.0 - dist_c/4)
+                clr = lerp((100,80,15),(255,235,60), beat_t*0.7+center_boost*0.3)
+            elif g.boss.key=="boss5":
+                # pale architect: cold blue-white, blueprint lines
+                idle_t = (math.sin(now*0.6 + cx2*0.2)*0.5+0.5)
+                clr = lerp((140,155,175),(220,230,250),idle_t)
+            elif g.boss.key=="boss6":
+                # sovereign hound: deep purple idle, snarling red on hunt/pounce
+                in_hunt = now < g.boss.hunt_until
+                pouncing = g.boss.hound_pounce is not None
+                if pouncing:
+                    t = (math.sin(now*10)*0.5+0.5)
+                    clr = lerp((120,20,200),(255,80,80),t)
+                elif in_hunt:
+                    t = (math.sin(now*3 + cx2*0.2)*0.5+0.5)
+                    clr = lerp((80,30,140),(160,60,220),t)
+                else:
+                    # rest phase: dim, calm purple
+                    clr = lerp((40,20,80),(90,50,130),0.5)
+            elif g.boss.key=="boss7":
+                # liminal: left half is golden-light, right half is deep void-purple
+                # cells left of center lean light, right lean void
+                half = cx2 < int(g.boss.x)
+                if half:
+                    t = (math.sin(now*1.8 + cx2*0.25)*0.5+0.5)
+                    clr = lerp((160,130,40),(240,210,80),t)
+                else:
+                    t = (math.sin(now*1.8 + cx2*0.25 + math.pi)*0.5+0.5)
+                    clr = lerp((60,20,120),(140,60,220),t)
+            elif g.boss.key=="boss5":
+                # pale architect: cold blueprint white-blue, slow phase drift per cell
+                idle_t = (math.sin(now*0.7 + cx2*0.25 + cy2*0.1)*0.5+0.5)
+                clr = lerp((130,150,180),(215,225,245),idle_t)
+            elif g.boss.key=="boss6":
+                # sovereign hound: rich purple in rest, burning red in hunt/pounce
+                in_hunt6 = now < g.boss.hunt_until
+                pouncing6 = g.boss.hound_pounce is not None
+                if pouncing6:
+                    t6 = (math.sin(now*12)*0.5+0.5)
+                    clr = lerp((140,20,20),(255,70,50),t6)
+                elif in_hunt6:
+                    t6 = (math.sin(now*2.5 + cx2*0.2)*0.5+0.5)
+                    clr = lerp((90,30,150),(175,70,235),t6)
+                else:
+                    clr = lerp((40,20,70),(85,45,120),0.5)
+            elif g.boss.key=="boss7":
+                # liminal: left of center = warm gold-light, right = cold void-purple
+                # each half has its own independent pulse phase
+                is_left = cx2 < int(g.boss.x)
+                if is_left:
+                    t7 = (math.sin(now*1.6 + cx2*0.3)*0.5+0.5)
+                    clr = lerp((150,120,30),(245,215,75),t7)
+                else:
+                    t7 = (math.sin(now*1.6 + cx2*0.3 + math.pi)*0.5+0.5)
+                    clr = lerp((55,15,110),(145,55,225),t7)
             else:
-                clr=g.boss.color
-            put(cx2,cy2,bch,clr)
+                clr = g.boss.color
+            put(cx2, cy2, bch, clr)
         # submerged: overlay ~ over entire shape
         if g.boss.is_submerged():
             t=(math.sin(now*5)+1)/2
@@ -2867,16 +3041,36 @@ def render_game(g, out_buf):
                     avg=int((fc[0]+fc[1]+fc[2])/3)
                     buf[(x,y)]=(ch2,lerp(fc,(avg,avg,avg),intensity*0.7),bc)
 
-    # player
+    # player — char and color reflect current state
     px2,py2=int(g.px),int(g.py)
-    if now<g.gd_invincible_until:
+    # damage flash: briefly turns the player @ red-white on taking a hit
+    dmg_flash_active = hasattr(g,'_dmg_flash_until') and now < g._dmg_flash_until
+    # dashing: show directional motion char
+    dashing = len(g.dash_trail) > 0 and now - g.dash_trail[-1][2] < 0.15 if g.dash_trail else False
+    if dashing:
+        # pick direction char based on dash vector
+        dx_d=g.boss.x-g.px; dy_d=g.boss.y-g.py
+        dash_ch = '«' if dx_d>0 else '»'
+        t_d=(now-g.dash_trail[-1][2])/0.15
+        put(px2,py2,dash_ch,lerp(CLASS_DATA[g.cls_name]["color"],(200,220,255),1-t_d))
+    elif dmg_flash_active:
+        t_df=(g._dmg_flash_until-now)/0.3
+        put(px2,py2,'@',lerp((60,10,10),(255,80,80),t_df))
+    elif now<g.gd_invincible_until:
         flash=abs(math.sin(now*20))
         put(px2,py2,'@',lerp((200,150,0),(255,255,100),flash))
-    elif g.ult_active: put(px2,py2,'@',(0,200,255))
+    elif g.ult_active:
+        # pulse in class color during ult
+        t_u=(math.sin(now*5)+1)/2
+        put(px2,py2,'@',lerp(CLASS_DATA[g.cls_name]["color"],(255,255,255),t_u*0.6))
     elif g.rev_ult_active:
         t=(math.sin(now*8)+1)/2; put(px2,py2,'@',lerp((200,30,30),(255,120,50),t))
     elif g.is_stunned(): put(px2,py2,'@',(150,150,255))
     elif g.bone_shield_active: put(px2,py2,'@',(100,180,255))
+    elif g.hp <= g.max_hp * 0.3:
+        # danger zone: slow dim flicker in deep red
+        t_danger=(math.sin(now*2.5)+1)/2
+        put(px2,py2,'@',lerp((100,10,10),(200,40,40),t_danger))
     else:
         clr=CLASS_DATA[g.cls_name]["color"]
         put(px2,py2,'@',lerp(clr,(200,255,200),0.3))
@@ -3082,14 +3276,35 @@ def render_game(g, out_buf):
             if 0<=sy<th and 0<=sx<tw:
                 out+=at(sx,sy)+fg(*c)+BOLD+text+RST
 
-    # game over / victory
+    # game over / victory — animated overlays
     if g.game_over:
-        msg2="GAME OVER  —  press ESC"
-        cx2=offset_x+mw//2-len(msg2)//2
-        out+=at(cx2,offset_y+mh//2)+fg(255,50,50)+BOLD+msg2+RST
+        # blood-red pulsing banner
+        t_go = (math.sin(now2*3)*0.5+0.5)
+        go_clr = lerp((180,20,20),(255,70,70),t_go)
+        msg2 = "  GAME OVER  —  press ESC  "
+        cx2 = offset_x+mw//2-len(msg2)//2
+        # dim background strip
+        out += at(cx2, offset_y+mh//2) + fg(255,50,50) + BOLD + msg2 + RST
+        # secondary line
+        sub = "you were defeated"
+        out += at(offset_x+mw//2-len(sub)//2, offset_y+mh//2+1) + fg(*go_clr) + sub + RST
     elif g.victory:
-        msg2=f"VICTORY!  +{g.earned_coins} coins  —  press ESC"
-        cx2=offset_x+mw//2-len(msg2)//2
-        out+=at(cx2,offset_y+mh//2)+fg(50,255,100)+BOLD+msg2+RST
+        # gold shimmer celebration
+        msg2 = f"  VICTORY!  +{g.earned_coins} coins  "
+        cx2 = offset_x+mw//2-len(msg2)//2
+        for ci, ch in enumerate(msg2):
+            t_v = (math.sin(now2*4 + ci*0.4)*0.5+0.5)
+            vc = lerp((80,200,80),(255,255,100),t_v)
+            out += at(cx2+ci, offset_y+mh//2) + fg(*vc) + BOLD + ch + RST
+        # sparkle confetti around the banner
+        if random.random() < 0.6:
+            sx_v = offset_x + random.randint(0,mw-1)
+            sy_v = offset_y + random.randint(mh//2-3, mh//2+3)
+            t_sp = random.random()
+            sc_v = lerp((255,200,50),(100,255,150),t_sp)
+            out += at(sx_v,sy_v) + fg(*sc_v) + random.choice(['*','+','·','✦']) + RST
+        sub2 = "press ESC to return"
+        t_sub = (math.sin(now2*2)*0.5+0.5)
+        out += at(offset_x+mw//2-len(sub2)//2, offset_y+mh//2+1) + fg(*lerp((60,180,60),(120,255,120),t_sub)) + sub2 + RST
 
     out_buf.append(out)

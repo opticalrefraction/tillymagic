@@ -442,6 +442,78 @@ def menu_class_select(inp):
         time.sleep(0.033)
 
 
+# boss shape previews: (dx, dy, char) offsets drawn centered at (cx, cy)
+# each shape is hand-crafted to be readable at terminal scale.
+# dx is doubled in rendering to correct terminal aspect ratio.
+_BOSS_PREVIEWS = {
+    "boss1": [
+        ( 0,-2,'▲'),
+        (-1,-1,'│'),( 0,-1,'◈'),( 1,-1,'│'),
+        (-2, 0,'═'),(-1, 0,'█'),( 0, 0,'▓'),( 1, 0,'█'),( 2, 0,'═'),
+        (-1, 1,'▓'),( 0, 1,'▓'),( 1, 1,'▓'),
+        ( 0, 2,'┴'),
+    ],
+    "boss2": [
+        (-3,-1,'▓'),(-2,-1,'◆'),(-1,-1,'◆'),( 0,-1,'◆'),( 1,-1,'◆'),( 2,-1,'◆'),( 3,-1,'▓'),
+        (-3, 0,'╠'),(-2, 0,'▓'),(-1, 0,'█'),( 0, 0,'@'),( 1, 0,'█'),( 2, 0,'▓'),( 3, 0,'╣'),
+        (-3, 1,'▓'),(-2, 1,'◆'),(-1, 1,'◆'),( 0, 1,'◆'),( 1, 1,'◆'),( 2, 1,'◆'),( 3, 1,'▓'),
+    ],
+    "boss3": [
+        (-1,-3,'~'),( 0,-3,'≋'),( 1,-3,'~'),
+        (-2,-2,'≈'),(-1,-2,'◈'),( 0,-2,'◈'),( 1,-2,'◈'),( 2,-2,'≈'),
+        (-3,-1,'~'),(-2,-1,'≈'),(-1,-1,'█'),( 0,-1,'@'),( 1,-1,'█'),( 2,-1,'≈'),( 3,-1,'~'),
+        (-2, 0,'≋'),(-1, 0,'░'),( 0, 0,'░'),( 1, 0,'░'),( 2, 0,'≋'),
+        (-1, 1,'~'),( 0, 1,'≈'),( 1, 1,'~'),
+    ],
+    "boss4": [
+        ( 0,-4,'♩'),
+        (-1,-3,'('),( 0,-3,'◎'),( 1,-3,')'),
+        (-2,-2,'║'),(-1,-2,'▓'),( 0,-2,'◈'),( 1,-2,'▓'),( 2,-2,'║'),
+        (-3,-1,'/'),( 0,-1,'█'),( 3,-1,'─'),( 4,-1,'─'),( 5,-1,'♪'),
+        (-2, 0,'░'),(-1, 0,'░'),( 0, 0,'@'),( 1, 0,'░'),( 2, 0,'░'),
+        (-2, 1,'▓'),(-1, 1,'|'),( 0, 1,'|'),( 1, 1,'▓'),
+    ],
+    "boss5": [
+        ( 0,-3,'▲'),
+        (-1,-2,'|'),( 0,-2,'T'),( 1,-2,'|'),
+        (-2,-1,'('),( 0,-1,'◈'),( 2,-1,'─'),( 3,-1,'─'),( 4,-1,'⊤'),
+        (-1, 0,'░'),( 0, 0,'@'),( 1, 0,'░'),
+        (-1, 1,'▓'),( 0, 1,'|'),( 1, 1,'▓'),
+    ],
+    "boss6": [
+        (-1,-2,'▲'),( 0,-2,'W'),( 1,-2,'▲'),
+        (-3,-1,'('),(-1,-1,'O'),( 0,-1,'@'),( 1,-1,'O'),( 3,-1,')'),
+        (-4, 0,'▓'),(-2, 0,'█'),( 0, 0,'▓'),( 2, 0,'█'),( 4, 0,'▓'),
+        (-3, 1,'|'),(-1, 1,'|'),( 1, 1,'|'),( 3, 1,'|'),
+        (-2, 2,'/'),(-1, 2,'\\'),( 1, 2,'/'),( 2, 2,'\\'),
+    ],
+    "boss7": [
+        (-1,-3,'O'),( 0,-3,'|'),( 1,-3,'O'),
+        (-2,-2,'▒'),(-1,-2,'|'),( 0,-2,'╫'),( 1,-2,'█'),( 2,-2,'▓'),
+        (-3,-1,'/'),(-1,-1,'░'),( 0,-1,'║'),( 1,-1,'▓'),( 3,-1,'\\'),
+        (-2, 0,'▒'),( 0, 0,'@'),( 2, 0,'▓'),
+        (-1, 1,'/'),( 0, 1,'╫'),( 1, 1,'\\'),
+    ],
+}
+
+def _draw_boss_preview(now, boss_key, cx, cy, selected):
+    out = ""
+    shape = _BOSS_PREVIEWS.get(boss_key, [(0,0,'?')])
+    clr_base = BOSS_DATA[boss_key]["color"]
+    bob_spd = 2.2 if selected else 0.6
+    bob = int(math.sin(now * bob_spd) * 0.8 + 0.5)
+    for ox, oy, ch in shape:
+        rx = cx + ox * 2
+        ry = cy + oy + bob
+        if selected:
+            t = (math.sin(now*2.5 + ox*0.5 + oy*0.4) * 0.5 + 0.5)
+            clr = lerp(clr_base, (255,255,255), t*0.4)
+        else:
+            clr = lerp(clr_base, (25,25,35), 0.65)
+        out += at(rx, ry) + fg(*clr) + ch + RST
+    return out
+
+
 def menu_boss_select(inp):
     bosses = list(BOSS_DATA.keys())
     sel = 0
@@ -457,8 +529,8 @@ def menu_boss_select(inp):
         inp.read()
         keys = inp.get_single()
         for k in keys:
-            if k == 'w': sel=(sel-1)%len(bosses)
-            if k == 's': sel=(sel+1)%len(bosses)
+            if k in ('w', '\x1b[A'): sel=(sel-1)%len(bosses)
+            if k in ('s', '\x1b[B'): sel=(sel+1)%len(bosses)
             if k in (' ','\r','\n'): return bosses[sel]
             if k in ('\x03','\x1b'): return None
 
@@ -467,37 +539,64 @@ def menu_boss_select(inp):
         out += animated_title(now, 1)
         out += center_text("── SELECT YOUR BOSS ──", 3, (160,60,60))
 
-        box_w = 60
-        bx = (tw - box_w)//2
+        # left column: compact boss list cards
+        list_w = 34
+        detail_w = 44
+        gap = 3
+        total_w = list_w + gap + detail_w
+        lx = max(1, (tw - total_w)//2)
+        dx = lx + list_w + gap
 
-        for i, boss_key in enumerate(bosses):
-            bd = BOSS_DATA[boss_key]
-            row_start = 5 + i * 7
-            selected = (i == sel)
+        for i, bk in enumerate(bosses):
+            bd = BOSS_DATA[bk]
+            ry = 5 + i*3
+            is_sel = (i == sel)
             clr = bd["color"]
-            border_clr = lerp(clr,(255,255,255),0.4) if selected else (50,50,60)
-
-            out += box(bx, row_start, box_w, 6, border_clr)
-            name = bd["name"]
-            coins = bd["coins"]
-            if selected:
-                t=(math.sin(now*3)+1)/2
-                name_clr = lerp(clr,(255,255,255),t*0.4)
-                prefix = "▶ "
+            border = lerp(clr,(255,255,255),0.55) if is_sel else (38,38,50)
+            out += box(lx, ry, list_w, 3, border)
+            if is_sel:
+                t_n = (math.sin(now*3)*0.5+0.5)
+                nc = lerp(clr,(255,255,255),t_n*0.45)
+                out += at(lx+2, ry+1) + fg(*nc) + BOLD + "▶ " + bd["name"] + RST
             else:
-                name_clr = lerp(clr,(80,80,80),0.5)
-                prefix = "  "
-            out += at(bx+2, row_start+1)+fg(*name_clr)+BOLD+prefix+name+RST
-            out += at(bx+2+box_w-18, row_start+1)+fg(200,170,50)+f"Reward: {coins} coins"+RST
-            stats = f"HP:{bd['hp']}  DMG:{bd['damage']}  HIT CD:{bd['hit_cd']}s"
-            out += at(bx+2, row_start+2)+fg(130,130,130)+stats+RST
-            out += at(bx+2, row_start+3)+fg(110,110,110)+bd["desc"][0][:box_w-4]+RST
-            out += at(bx+2, row_start+4)+fg(90,90,90)+bd["desc"][1][:box_w-4]+RST
+                out += at(lx+2, ry+1) + fg(*lerp(clr,(55,55,65),0.6)) + "  " + bd["name"] + RST
+            reward_str = f"{bd['coins']}c"
+            out += at(lx+list_w-len(reward_str)-2, ry+1) + fg(165,140,40) + reward_str + RST
 
-        out += center_text("W/S to navigate   SPACE to confirm   ESC to go back", th-2, (70,70,90))
+        # right: detail panel for selected boss
+        bd_s = BOSS_DATA[bosses[sel]]
+        clr_s = bd_s["color"]
+        panel_h = max(18, len(bosses)*3+2)
+        out += box(dx, 5, detail_w, panel_h, lerp(clr_s,(18,18,28),0.72))
+
+        # animated preview centered in upper portion
+        preview_cx = dx + detail_w//2
+        preview_cy = 5 + 7
+        out += _draw_boss_preview(now, bosses[sel], preview_cx, preview_cy, True)
+
+        # boss name with shimmer
+        t_name = (math.sin(now*1.8)*0.5+0.5)
+        name_clr = lerp(clr_s,(255,255,255), t_name*0.35)
+        out += at(dx+2, 5+1) + fg(*name_clr) + BOLD + bd_s["name"] + RST
+
+        # coin reward
+        out += at(dx+2, 5+2) + fg(200,170,50) + f"Reward: {bd_s['coins']} coins" + RST
+
+        # stats
+        stats = f"HP:{bd_s['hp']}  DMG:{bd_s['damage']}  CD:{bd_s['hit_cd']}s"
+        out += at(dx+2, 5+3) + fg(115,115,125) + stats[:detail_w-4] + RST
+
+        # description below preview
+        desc_y = 5 + 14
+        for di, line in enumerate(bd_s["desc"][:4]):
+            alpha = 1.0 - di*0.15
+            dc = lerp((50,50,62),(150,150,165),alpha)
+            if desc_y+di < th-2:
+                out += at(dx+2, desc_y+di) + fg(*dc) + line[:detail_w-4] + RST
+
+        out += center_text("W/S: navigate   SPACE: select   ESC: back", th-2, (65,65,85))
         write(out)
         time.sleep(0.033)
-
 
 def menu_map_select(inp):
     maps = list(MAP_DATA.keys())
