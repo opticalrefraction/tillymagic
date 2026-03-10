@@ -388,6 +388,7 @@ class Game:
         self.py = float(self.mh//2)
         self.hp = base["hp"]; self.max_hp = base["hp"]
         self.speed = base["speed"] * (1 + 0.3*(size_mult-1))
+        self.base_speed = self.speed  # base_speed is the unmodified reference, used by reliquary water slow
         self.dash_dist = base["dash_dist"]
         self.dmg_mult = base["dmg_mult"]
         self.cd_mult = base["cd_mult"]
@@ -525,14 +526,23 @@ def process_input(g, keys, dt):
                 spd *= 0.4
                 break
         norm=math.hypot(mx,my) or 1
-        nx=max(1,min(g.mw-2, g.px+(mx/norm)*spd))
-        ny=max(1,min(g.mh-2, g.py+(my/norm)*spd))
+        # for spire: let position overflow the border freely, then wrap.
+        # for all other maps: clamp to arena bounds as normal.
+        raw_nx = g.px + (mx/norm)*spd
+        raw_ny = g.py + (my/norm)*spd
+        if g.map_key == "spire":
+            # wrap by treating the playable area as 1..mw-2 wide and 1..mh-2 tall.
+            # shift into 0-based space, modulo the playable width/height, shift back.
+            # this makes left-edge and top-edge wrap correctly just like right and bottom.
+            pw = g.mw - 2  # playable width (cols 1..mw-2)
+            ph = g.mh - 2  # playable height (rows 1..mh-2)
+            nx = ((raw_nx - 1) % pw) + 1
+            ny = ((raw_ny - 1) % ph) + 1
+        else:
+            nx = max(1, min(g.mw-2, raw_nx))
+            ny = max(1, min(g.mh-2, raw_ny))
         # check map blocks
         boss_body = g.boss.get_body_set() if g.boss.alive else set()
-        # spire map wraps at all four edges
-        if g.map_key == "spire":
-            nx = nx % g.mw
-            ny = ny % g.mh
         if not g.geo.is_blocked(int(nx),int(ny)) and (int(nx),int(ny)) not in boss_body:
             # lava check
             if g.geo.is_lava(int(nx),int(ny)):
@@ -618,12 +628,37 @@ def do_blink_scatter(g):
         g.add_msg("Out of range!",0.8,g.mw//2,g.mh//2-1,(200,200,100)); return
     g.move_cds_end[4]=time.time()+g.cd(4)
     ox,oy=g.px,g.py; tx,ty=g.boss.x,g.boss.y
+    # spawn afterimages along the path
     for i in range(1,4):
         t=i/4.0
         g.afterimages.append(Afterimage(int(ox+(tx-ox)*t),int(oy+(ty-oy)*t)))
-    ang=random.uniform(0,math.pi*2)
-    g.px=max(1,min(g.mw-2,tx+math.cos(ang)*2))
-    g.py=max(1,min(g.mh-2,ty+math.sin(ang)))
+    # find a free landing tile near the boss but outside its body and map geometry.
+    # try increasing radii in random angle order until a clear cell is found.
+    boss_body = g.boss.get_body_set()
+    landed = False
+    for radius in [4, 5, 6, 7, 3]:
+        # shuffle angles so we don't always end up on the same side
+        angles = list(range(0, 360, 20))
+        random.shuffle(angles)
+        for deg in angles:
+            rad = math.radians(deg)
+            # x offset is wider than y due to char aspect ratio
+            cx2 = tx + math.cos(rad) * radius * 1.6
+            cy2 = ty + math.sin(rad) * radius * 0.8
+            cx2 = int(max(1, min(g.mw-2, cx2)))
+            cy2 = int(max(1, min(g.mh-2, cy2)))
+            if (cx2, cy2) not in boss_body and not g.geo.is_blocked(cx2, cy2):
+                g.px = float(cx2); g.py = float(cy2)
+                landed = True
+                break
+        if landed:
+            break
+    # fallback: if no clear tile found at any radius, just step back from boss
+    if not landed:
+        dx = ox - tx; dy = oy - ty
+        d = math.hypot(dx, dy) or 1
+        g.px = max(1, min(g.mw-2, tx + (dx/d)*5))
+        g.py = max(1, min(g.mh-2, ty + (dy/d)*2.5))
 
 def do_wiz_ult(g):
     if not g.can_ult(): g.add_msg("Need <50% HP!",1.0,g.mw//2,g.mh//2,(255,80,80)); return
@@ -1143,7 +1178,14 @@ def update_game(g, dt):
             geo.water_last_rise = now
             g.add_msg(f"Water rises! Level {geo.water_level}/2", 1.5, g.mw//2, 2, (60,120,200))
         # water movement penalty
-        in_water = geo.water_level > 0 and g.py > g.mh - (geo.water_level * g.mh//3)
+        # player is in water when their Y is at or below the water surface row.
+        # water_top = mh-2 - water_rows + 1 where water_rows = water_level * mh//3
+        if geo.water_level > 0:
+            wrows = min(g.mh-4, max(1, geo.water_level * (g.mh//3)))
+            wtop = g.mh-2 - wrows + 1
+            in_water = g.py >= wtop
+        else:
+            in_water = False
         if in_water:
             g.speed_override = g.base_speed * 0.7
         else:
@@ -1832,23 +1874,26 @@ def render_game(g, out_buf):
             for x in range(1,mw-1):
                 if (x*7+y*3)%13==0:
                     put(x,y,',',lerp((30,40,35),(50,65,45),(math.sin(now*0.2+x*0.1)+1)/2))
-        # water rising from bottom
+        # water rising from the bottom of the map upward.
+        # level 1 fills the bottom third, level 2 fills the bottom two thirds.
+        # water_top is the highest row the water occupies (inclusive).
+        # the surf row is drawn on top with a brighter animated wave line.
         if wl>0:
-            water_rows=min(mh-4, wl*(mh//3))
-            for wy in range(mh-2,mh-2-water_rows,-1):
+            water_rows = min(mh-4, max(1, wl * (mh//3)))
+            water_top = mh-2 - water_rows + 1
+            for wy in range(water_top, mh-1):
                 for wx in range(1,mw-1):
-                    depth=(mh-2-wy)/max(1,water_rows)
-                    t2=(math.sin(now*2+wx*0.2+wy*0.1)+1)/2
-                    wclr=lerp((30,60,140),(60,120,200),t2)
-                    if depth>0.6:
-                        wclr=lerp(wclr,(20,40,120),0.5)
-                    put(wx,wy,chr(8776) if (wx+wy)%3==0 else '~',wclr)
-        # water surface sparkle
-        if wl>0:
-            surf_y=mh-2-wl*(mh//3)
+                    # depth 0.0 = surface, 1.0 = deepest
+                    depth = (wy - water_top) / max(1, water_rows-1)
+                    t2 = (math.sin(now*2 + wx*0.2 + wy*0.1)+1)/2
+                    wclr = lerp((50,100,200),(30,60,140),depth)
+                    wclr = lerp(wclr, lerp(wclr,(80,160,255),0.3), t2*(1.0-depth))
+                    put(wx, wy, chr(8776) if (wx+wy)%3==0 else '~', wclr)
+            # surface row: brighter animated sparkle
             for wx in range(1,mw-1):
-                t2=(math.sin(now*3+wx*0.4)+1)/2
-                put(wx,surf_y,'~',lerp((60,120,200),(140,200,255),t2))
+                t2=(math.sin(now*4+wx*0.35)+1)/2
+                put(wx, water_top, '~' if t2>0.5 else chr(8776),
+                    lerp((80,160,240),(180,230,255),t2))
         # chests: closed=treasure box, open=scattered loot
         for ch in getattr(geo,'chests',[]):
             cx2,cy2,is_open,effect=ch
