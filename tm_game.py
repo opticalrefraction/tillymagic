@@ -2316,8 +2316,10 @@ def render_game(g, out_buf):
     else:
         php=f"HP:{g.hp}/{g.max_hp}"
 
-    # boss7 liminal: show two separate hp bars for light and void halves
+    # boss7 liminal: show two separate hp bars for light and void halves.
+    # hud_y is not yet defined here so compute it directly from offset_y and mh.
     if g.boss.key=="boss7" and g.boss.alive:
+        liminal_hud_y = offset_y + mh
         lhp = max(0, g.boss.light_hp); vhp = max(0, g.boss.void_hp)
         bar_len = 20
         l_fill = int(bar_len * lhp / max(1, g.boss.max_hp // 2))
@@ -2325,11 +2327,11 @@ def render_game(g, out_buf):
         l_bar = fg(220,200,80) + "LIGHT[" + "█"*l_fill + "░"*(bar_len-l_fill) + "]" + RST
         v_bar = fg(120,60,200) + "VOID[" + "█"*v_fill + "░"*(bar_len-v_fill) + "]" + RST
         bx_r = offset_x + mw - 50
-        out += at(bx_r, hud_y+1) + l_bar + "  " + v_bar
+        out += at(bx_r, liminal_hud_y+1) + l_bar + "  " + v_bar
         if g.boss.merge_active:
             t2 = (math.sin(now*8)+1)/2
             mc = lerp((150,60,200),(255,150,255),t2)
-            out += at(bx_r, hud_y+2) + fg(*mc) + BOLD + "MERGING! Deal 80 dmg to stop!" + RST
+            out += at(bx_r, liminal_hud_y+2) + fg(*mc) + BOLD + "MERGING! Deal 80 dmg to stop!" + RST
 
     # boss hp — fixed width to avoid bleed
     if g.boss.alive:
