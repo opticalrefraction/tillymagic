@@ -103,8 +103,22 @@ SAVE_PATH = os.path.expanduser("~/.tillymagic_save.json")
 def load_save():
     default = {
         "coins": 0,
-        "class_levels": {"wizard":1,"gravedigger":1,"marionette":1,"cartographer":1,"revenant":1,"siphon":1,"undertaker":1,"glasswright":1,"bellwether":1,"ashwalker":1},
-        "class_stats": {}   # class -> {stat: bonus}
+        "class_levels": {
+            "wizard":1,"gravedigger":1,"marionette":1,"cartographer":1,
+            "revenant":1,"siphon":1,"undertaker":1,"glasswright":1,
+            "bellwether":1,"ashwalker":1,
+        },
+        "class_stats": {},     # class -> {stat: count}
+        # multiplayer identity — generated once on first launch
+        # shown in lobby as "Joined as '$' (Crimson Wizard)"
+        "mp_name":   "",       # empty = auto-generate on first use
+        "mp_stats": {          # lifetime multiplayer stats
+            "games_played":  0,
+            "games_won":     0,
+            "revives_given": 0,
+            "revives_taken": 0,
+            "times_downed":  0,
+        },
     }
     try:
         with open(SAVE_PATH) as f: d = json.load(f)
@@ -117,6 +131,96 @@ def write_save(d):
     try:
         with open(SAVE_PATH,'w') as f: json.dump(d,f)
     except: pass
+
+# mp name generator — called once on first multiplayer launch
+# produces names like "Ashen Wizard" or "Grim Bellwether"
+_MP_NAME_PREFIXES = [
+    "Ashen","Grim","Pale","Hollow","Silent","Cursed","Sunken","Crimson",
+    "Verdant","Gilded","Spectral","Brazen","Obsidian","Amber","Ivory",
+]
+_MP_NAME_CLASSES = [
+    "Wizard","Gravedigger","Marionette","Cartographer","Revenant",
+    "Siphon","Undertaker","Glasswright","Bellwether","Ashwalker",
+]
+
+def generate_mp_name() -> str:
+    prefix = random.choice(_MP_NAME_PREFIXES)
+    cls    = random.choice(_MP_NAME_CLASSES)
+    return f"{prefix} {cls}"
+
+def get_or_create_mp_name(save: dict) -> str:
+    """return existing mp name or generate and persist a new one."""
+    if not save.get("mp_name"):
+        save["mp_name"] = generate_mp_name()
+        write_save(save)
+    return save["mp_name"]
+
+def record_mp_stat(save: dict, stat: str, amount: int = 1):
+    """increment a multiplayer stat in save. safe to call with any stat key."""
+    mp = save.setdefault("mp_stats", {})
+    mp[stat] = mp.get(stat, 0) + amount
+    write_save(save)
+
+# ── multiplayer constants ────────────────────────────────────────────────────
+# these mirror the values in tm_network.py so tm_core stays self-contained.
+# any file that imports tm_core gets these without needing to import tm_network.
+
+# network ports
+MP_TCP_PORT = 7771   # reliable game channel
+MP_UDP_PORT = 7772   # discovery broadcasts
+
+# player symbol pool — fixed assignment: host=@, joiners in order
+MP_PLAYER_SYMBOLS = ['@', '$', '%', '&']
+
+# per-symbol display colors (r,g,b) — used in rendering and lobby UI
+MP_SYMBOL_COLORS = {
+    '@': (120, 200, 120),   # green  — host
+    '$': (100, 160, 220),   # blue   — joiner 1
+    '%': (220, 140,  40),   # amber  — joiner 2
+    '&': (200,  80, 180),   # pink   — joiner 3
+}
+
+# boss scaling by player count (index = player count, index 0/1 = solo)
+MP_BOSS_HP_MULT    = [1.0, 1.0, 2.5, 3.5, 4.5]
+MP_BOSS_SPEED_MULT = [1.0, 1.0, 1.15, 1.25, 1.35]
+
+# revival time in seconds by player count
+MP_REVIVAL_TIME = [0, 0, 6, 8, 10]
+
+# max players per lobby
+MP_MAX_PLAYERS = 4
+
+# connection timeouts (seconds)
+MP_HOST_DROP_TIMEOUT   = 30
+MP_CLIENT_DROP_TIMEOUT = 60
+MP_RECONNECT_GRACE     = 60
+
+# crank sensitivity for Playdate: degrees of rotation per move step
+# 45 degrees = deliberate but not sluggish. full 360 = ~8 steps.
+PD_CRANK_DEGREES_PER_STEP = 45.0
+
+# playdate screen dimensions (fixed)
+PD_SCREEN_W = 400
+PD_SCREEN_H = 240
+
+# playdate default map size (fits ~66x20 chars at 6x12px font)
+PD_MAP_W = 66
+PD_MAP_H = 20
+
+def mp_boss_hp_mult(player_count: int) -> float:
+    idx = max(0, min(player_count, len(MP_BOSS_HP_MULT) - 1))
+    return MP_BOSS_HP_MULT[idx]
+
+def mp_boss_speed_mult(player_count: int) -> float:
+    idx = max(0, min(player_count, len(MP_BOSS_SPEED_MULT) - 1))
+    return MP_BOSS_SPEED_MULT[idx]
+
+def mp_revival_time(player_count: int) -> float:
+    idx = max(0, min(player_count, len(MP_REVIVAL_TIME) - 1))
+    return float(MP_REVIVAL_TIME[idx])
+
+def mp_symbol_color(symbol: str) -> tuple:
+    return MP_SYMBOL_COLORS.get(symbol, (180, 180, 180))
 
 # class definitions
 CLASS_DATA = {

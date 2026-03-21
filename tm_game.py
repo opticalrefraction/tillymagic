@@ -64,6 +64,40 @@ class BossString:  # marionette
 class CharTile:    # cartographer
     def __init__(self,x,y): self.x=x;self.y=y; self.born=time.time()
 
+# lightweight stand-in for PlayerSlot when we need to broadcast state
+# for a remote player without a full slot object (e.g. if slot lookup fails)
+class _FakeSlot:
+    def __init__(self, pid, x, y, hp):
+        self.pid = pid; self.x = x; self.y = y; self.hp = hp
+        self.max_hp = 100; self.symbol = '?'; self.status = 'downed'
+    def to_dict(self): return {
+        'pid': self.pid, 'x': self.x, 'y': self.y,
+        'hp': self.hp, 'max_hp': self.max_hp,
+        'symbol': self.symbol, 'status': self.status,
+    }
+
+# remote player — represents another player on the network
+# rendered on every client's screen. host keeps one per connected slot.
+class RemotePlayer:
+    def __init__(self, pid, symbol, cls_name='wizard'):
+        self.pid      = pid
+        self.symbol   = symbol      # '@' '$' '%' '&'
+        self.cls_name = cls_name
+        self.x        = 0.0
+        self.y        = 0.0
+        self.hp       = 100
+        self.max_hp   = 100
+        self.status   = 'alive'     # 'alive' | 'downed' | 'spectate'
+        self.last_seen = time.time()
+
+    def color(self):
+        return {
+            '@': (120, 200, 120),
+            '$': (100, 160, 220),
+            '%': (220, 140,  40),
+            '&': (200,  80, 180),
+        }.get(self.symbol, (180, 180, 180))
+
 # boss
 class Boss:
     def __init__(self, key, bx, by):
@@ -495,6 +529,7 @@ class Game:
         boss = Boss(boss_key, bx, self.mh//2)
         boss.damage = int(boss.damage * (1 + 0.3*(size_mult-1)))
         self.boss = boss
+        # mp scaling applied later via setup_multiplayer() once player count is known
 
         # boss2 clone (mirror map)
         self.mirror_clone_hp = 200 if map_key=="mirror" else 0
@@ -503,6 +538,131 @@ class Game:
         self.game_over = False; self.victory = False
         self.coin_mult = MAP_DATA[map_key]["coin_mult"] * size_coin_mult
         self.earned_coins = 0
+
+        # ── multiplayer state ────────────────────────────────────────────────
+        # net: NetGameState or None (None = singleplayer)
+        # remote_players: pid -> RemotePlayer (rendered on both host and client)
+        # mp_status: 'alive' | 'downed' | 'spectate' for THIS local player
+        # downed_at: timestamp when this player went down
+        # revive_progress: (by_pid, start_time) or None
+        # mp_player_count: total players including self (used for boss scaling)
+        self.net = None
+        self.mp_pid = None
+        self.mp_symbol = '@'
+        self.mp_status = 'alive'
+        self.mp_downed_at = None
+        self.mp_revive_progress = None   # (by_pid, start_time)
+        self.mp_player_count = 1
+        self.mp_is_host = False
+        # boss targeting: lock onto a target pid for the full hit windup
+        self.boss_target_pid = None   # pid of player boss is currently targeting
+        self.boss_target_pos = None   # (x,y) locked when windup starts
+        # sync throttle: full sync sent every 2s, boss state every frame on host
+        self._last_full_sync = 0.0
+        self._last_boss_state_send = 0.0
+        self._mp_spectate_wants_leave = False  # set by ESC press during spectate
+
+    # ── multiplayer setup and helpers ─────────────────────────────────────────
+
+    def setup_multiplayer(self, net, pid, symbol, is_host, player_count):
+        """call after Game.__init__ to wire up network state and apply boss scaling."""
+        from tm_network import boss_hp_multiplier, boss_speed_multiplier, revival_time
+        self.net            = net
+        self.mp_pid         = pid
+        self.mp_symbol      = symbol
+        self.mp_is_host     = is_host
+        self.mp_player_count = player_count
+        # pre-populate remote_players from host slot list so everyone is visible
+        # immediately at game start without waiting for a MOVE message
+        if net and is_host and net.host:
+            with net.host._lock:
+                for slot in net.host.slots:
+                    if slot.pid == pid:
+                        continue   # skip self
+                    rp = RemotePlayer(slot.pid, slot.symbol, slot.cls_name or "wizard")
+                    rp.x = float(self.mw * 3 // 4)   # start on right side
+                    rp.y = float(self.mh // 2)
+                    rp.hp = CLASS_DATA.get(slot.cls_name or "wizard", {}).get("hp", 100)
+                    rp.max_hp = rp.hp
+                    net.remote_players[slot.pid] = rp
+        elif net and not is_host and net.client:
+            # client: seed remote_players with what we know from the lobby
+            # (the host's @ symbol at a guessed position; will be corrected by SYNC)
+            pass   # host will send SYNC within 2s; positions settle quickly
+        # scale boss hp and speed by player count
+        hp_mult  = boss_hp_multiplier(player_count)
+        spd_mult = boss_speed_multiplier(player_count)
+        self.boss.hp     = int(self.boss.hp     * hp_mult)
+        self.boss.max_hp = int(self.boss.max_hp * hp_mult)
+        self.boss.move_interval = self.boss.move_interval / spd_mult
+        self._revival_time = revival_time(player_count)
+        # give boss a multi-target attack unlock for 3+ players
+        self.boss.mp_multi_target = (player_count >= 3)
+        # host: update own slot with real starting state before broadcasting
+        if is_host and net and net.host:
+            net.host.update_host_state(
+                self.px, self.py,
+                CLASS_DATA.get(self.cls_name, {}).get("hp", 100),
+                CLASS_DATA.get(self.cls_name, {}).get("hp", 100),
+            )
+            net.host.broadcast_sync(self.boss.x, self.boss.y, self.boss.hp, self.boss.max_hp)
+
+    def get_all_alive_positions(self):
+        """returns list of (x, y) for all alive players including self.
+        used by boss targeting to find the closest target."""
+        positions = []
+        if self.mp_status == 'alive':
+            positions.append((self.px, self.py, self.mp_pid))
+        if self.net:
+            for pid, rp in self.net.remote_players.items():
+                if isinstance(rp, RemotePlayer) and rp.status == 'alive':
+                    positions.append((rp.x, rp.y, pid))
+                elif isinstance(rp, dict) and rp.get('status') == 'alive':
+                    positions.append((rp.get('x',0), rp.get('y',0), pid))
+        return positions
+
+    def closest_player_to_boss(self):
+        """returns (x, y, pid) of the alive player closest to the boss body."""
+        targets = self.get_all_alive_positions()
+        if not targets:
+            return (self.px, self.py, self.mp_pid)
+        return min(targets, key=lambda t: self.boss.body_dist(t[0], t[1]))
+
+    def mp_take_damage_remote(self, pid, dmg):
+        """host applies damage to a remote player and broadcasts the result."""
+        if not self.net or not self.net.is_host:
+            return
+        rp = self.net.remote_players.get(pid)
+        if not rp:
+            return
+        if isinstance(rp, dict):
+            rp['hp'] = max(0, rp.get('hp', 100) - dmg)
+            hp = rp['hp']
+        else:
+            rp.hp = max(0, rp.hp - dmg)
+            hp = rp.hp
+        # broadcast floater and state
+        rx = rp.get('x', 0) if isinstance(rp, dict) else rp.x
+        ry = rp.get('y', 0) if isinstance(rp, dict) else rp.y
+        self.net.host.broadcast_floater(rx, ry, dmg, (255,80,80))
+        self.net.host.broadcast_player_state(self.net.host.get_slot(pid) or _FakeSlot(pid, rx, ry, hp))
+        if hp <= 0:
+            self._mp_down_player(pid)
+
+    def _mp_down_player(self, pid):
+        """host marks a player as downed and starts their revival timer."""
+        if not self.net or not self.net.is_host:
+            return
+        slot = self.net.host.get_slot(pid)
+        if slot:
+            slot.status = 'downed'
+            slot.downed_at = time.time()
+        self.net.host.notify_downed(pid)
+        # also update remote_players dict
+        rp = self.net.remote_players.get(pid)
+        if rp:
+            if isinstance(rp, dict): rp['status'] = 'downed'
+            else: rp.status = 'downed'
 
     def cd(self, move):
         return self.move_cds.get(move, 1.0) * self.cd_mult
@@ -531,17 +691,37 @@ class Game:
         self.hp -= actual
         self._dmg_flash_until = time.time() + 0.3  # red flash on player char
         self.add_msg(f"-{actual}", 0.7, int(self.px), int(self.py)-1, (255,80,80))
+        # host: broadcast this floater so all clients see the damage number
+        if self.net and self.mp_is_host and self.net.host:
+            self.net.host.broadcast_floater(self.px, self.py, actual, (255,80,80))
         if self.hp <= 0:
             if self.cls_name=="revenant" and self.lives>1:
                 self.lives -= 1; self.rage_stacks += 1
                 self.hp = 60; self.stun_until = time.time()+0.5
                 self.add_msg("RESPAWN!", 1.0, int(self.px), int(self.py)-2, (255,100,100))
             else:
-                self.hp=0; self.game_over=True
+                self.hp = 0
+                if self.net and self.mp_player_count > 1:
+                    # multiplayer: go downed instead of instant game over
+                    self.mp_status = 'downed'
+                    self.mp_downed_at = time.time()
+                    self.add_msg("DOWNED! Waiting for revive...", 2.0,
+                                 self.mw//2, self.mh//2-2, (255,100,100))
+                    if self.net.client:
+                        self.net.client.send({"t":"DOWNED","pid":self.mp_pid})
+                else:
+                    self.game_over = True
 
 # input/action dispatch
 def process_input(g, keys, dt):
     if g.game_over or g.victory:
+        return
+    # downed or spectating players cannot act
+    if g.mp_status in ('downed', 'spectate'):
+        # but they can still press ESC to get the leave-game prompt
+        for k in keys:
+            if k in ('', ''):
+                g._mp_spectate_wants_leave = True
         return
     if g.ult_active or g.rev_ult_active:
         return  # locked during ultimate
@@ -1492,12 +1672,19 @@ def do_conflagration(g):
     g.add_msg(f"CONFLAGRATION! {tile_count} tiles", 1.5, g.mw//2, g.mh//2-1, (255,140,40))
 
 def _dmg_msg(g, dmg, clr):
+    # on host: also broadcast this floater to all clients
+    if g.net and g.mp_is_host and g.net.host:
+        g.net.host.broadcast_floater(g.boss.x, g.boss.y, dmg, clr)
     g.add_msg(f"-{dmg}",0.7,int(g.boss.x),int(g.boss.y)-1,clr)
 
 # update
 def update_game(g, dt):
     now=time.time()
     if g.game_over or g.victory: return
+
+    # process all incoming network messages first (no-op if singleplayer)
+    if g.net:
+        process_network(g)
 
     # 2 second idle resets combo back to state 0 (hit 1)
     if g.combo_state > 0 and now - g.combo_last_hit >= 2.0:
@@ -1818,6 +2005,9 @@ def update_game(g, dt):
             g.victory = True
             coins = int(BOSS_DATA[g.boss_key]["coins"]*g.coin_mult)
             g.earned_coins = coins
+            # host: tell all clients the game is won
+            if g.mp_is_host and g.net and g.net.host:
+                g.net.host.send_all({"t":"GAME_OVER","reason":"victory","coins":coins})
         return
 
     if not g.boss.is_stunned() and not g.boss.is_submerged():
@@ -1829,7 +2019,12 @@ def update_game(g, dt):
                 drift_x=math.sin(now*0.5)*0.5
                 g.px=max(1,min(g.mw-2,g.px+drift_x))
             if g.dist_boss()>g.boss.hit_range:
-                dx=g.px-g.boss.x; dy=g.py-g.boss.y
+                # in multiplayer: move toward closest alive player
+                if g.net and g.mp_player_count > 1:
+                    tx_mp, ty_mp, _tpid = g.closest_player_to_boss()
+                else:
+                    tx_mp, ty_mp = g.px, g.py
+                dx=tx_mp-g.boss.x; dy=ty_mp-g.boss.y
                 d=math.hypot(dx,dy) or 1
                 spd=1.8*(1+0.3*(g.size_mult-1))
                 if g.boss.key=="boss3":  # tide caller: submerge + water jets
@@ -2191,9 +2386,15 @@ def update_game(g, dt):
             g.boss.beat_pending_hit = False  # consume the pending flag regardless
 
         if can_start_hit:
-            if g.dist_boss() <= g.boss.hit_range + 2:
+            # pick closest player as the attack target
+            if g.net and g.mp_player_count > 1:
+                tx_h, ty_h, tpid_h = g.closest_player_to_boss()
+            else:
+                tx_h, ty_h, tpid_h = g.px, g.py, g.mp_pid
+            if g.boss.body_dist(tx_h, ty_h) <= g.boss.hit_range + 2:
                 g.boss.hit_windup = now
-                g.boss.hit_target = (g.px, g.py)
+                g.boss.hit_target = (tx_h, ty_h)
+                g.boss_target_pid = tpid_h
                 g.boss.hit_landing = now + 2.5
                 # trigger per-boss attack animation
                 anim_map = {'boss1': 'slam', 'boss2': 'stomp', 'boss3': 'surge', 'boss4': 'baton'}
@@ -2202,7 +2403,11 @@ def update_game(g, dt):
 
         if g.boss.hit_windup is not None:
             if now<g.boss.hit_windup+2.0:
-                g.boss.hit_target=(g.px,g.py)
+                # in singleplayer (or when boss targets local player) track position.
+                # in multiplayer, only update if the locked target IS the local player.
+                if not g.net or g.mp_player_count <= 1 or g.boss_target_pid == g.mp_pid:
+                    g.boss.hit_target=(g.px,g.py)
+                # for remote targets, position was locked at windup start — don't overwrite.
             if now>=g.boss.hit_landing:
                 if g.boss.hit_target:
                     if math.hypot(g.px-g.boss.hit_target[0],g.py-g.boss.hit_target[1])<1.5:
@@ -2241,8 +2446,13 @@ def update_game(g, dt):
                             g.add_msg("REDIRECTED!",1.0,g.mw//2,g.mh//2,(220,100,180))
                         elif not g.is_stunned() and now>g.gd_invincible_until and not g.rev_ult_active:
                             g.take_damage(g.boss.damage)
+                    # multiplayer: if boss targeted a remote player, host applies damage
+                    if (g.net and g.mp_is_host
+                            and g.boss_target_pid and g.boss_target_pid != g.mp_pid):
+                        g.mp_take_damage_remote(g.boss_target_pid, g.boss.damage)
                 g.boss.hit_windup=None; g.boss.hit_target=None
                 g.boss.hit_landing=None; g.boss.last_hit=now
+                g.boss_target_pid=None
 
     # boss3 water jets: extend each frame
     new_jets=[]
@@ -2278,6 +2488,345 @@ def update_game(g, dt):
 
     # clean messages
     g.messages=[m for m in g.messages if now-m[1]<m[2]]
+
+# ── multiplayer network processing ──────────────────────────────────────────
+def process_network(g):
+    """
+    called once per frame. drains the net inbox and applies all incoming
+    messages to game state. on host: also sends state updates outward.
+    safe to call with g.net=None (singleplayer — does nothing).
+    """
+    if not g.net:
+        return
+    now = time.time()
+    net = g.net
+
+    # ── inbound messages ─────────────────────────────────────────────────────
+    for item in net.poll():
+        # host inbox: (pid, msg); client inbox: msg dict
+        if isinstance(item, tuple):
+            pid_src, msg = item
+        else:
+            pid_src, msg = None, item
+
+        t = msg.get("t","")
+
+        if t == "MOVE":
+            # update remote player position
+            pid = msg.get("pid")
+            if pid and pid != g.mp_pid:
+                rp = _get_or_create_remote(g, pid, msg)
+                if rp:
+                    rp.x = msg.get("x", rp.x)
+                    rp.y = msg.get("y", rp.y)
+                    rp.last_seen = now
+                    # host: relay position to all other clients with full state
+                    if g.mp_is_host and net.host:
+                        net.host.send_all({"t":"PLAYER_STATE","pid":pid,
+                            "x":rp.x,"y":rp.y,"hp":rp.hp,"max_hp":rp.max_hp,
+                            "status":rp.status,"symbol":rp.symbol}, exclude_pid=pid)
+
+        elif t == "ACTION":
+            # clients handle their own actions locally for responsiveness.
+            # host just relays action info to other clients so they can see it.
+            pass
+
+        elif t == "PLAYER_STATE":
+            pid = msg.get("pid")
+            if pid and pid != g.mp_pid:
+                rp = _get_or_create_remote(g, pid, msg)
+                if rp:
+                    rp.x       = msg.get("x", rp.x)
+                    rp.y       = msg.get("y", rp.y)
+                    rp.hp      = msg.get("hp", rp.hp)
+                    rp.max_hp  = msg.get("max_hp", rp.max_hp)
+                    rp.status  = msg.get("status", rp.status)
+                    if msg.get("symbol"): rp.symbol = msg["symbol"]
+                    rp.last_seen = now
+
+        elif t == "BOSS_STATE":
+            # clients: update boss position and hp from host authority
+            if not g.mp_is_host and g.boss.alive:
+                g.boss.x           = msg.get("x", g.boss.x)
+                g.boss.y           = msg.get("y", g.boss.y)
+                g.boss.hp          = msg.get("hp", g.boss.hp)
+                g.boss.stun_until  = msg.get("stun_until", g.boss.stun_until)
+                g.boss.flash_until = msg.get("flash_until", g.boss.flash_until)
+
+        elif t == "BOSS_HP":
+            if not g.mp_is_host:
+                g.boss.hp     = msg.get("hp", g.boss.hp)
+                g.boss.max_hp = msg.get("max_hp", g.boss.max_hp)
+
+        elif t == "FLOATER":
+            # render a damage floater at the given map position
+            fx = msg.get("x", 0); fy = msg.get("y", 0)
+            amt = msg.get("amount", 0)
+            clr = tuple(msg.get("clr", [255,80,80]))
+            g.add_msg(f"-{amt}", 0.7, int(fx), int(fy), clr)
+
+        elif t == "SYNC":
+            net.apply_sync(msg)
+            if not g.mp_is_host:
+                # also sync boss from full snapshot
+                if "boss_hp" in msg:
+                    g.boss.hp = msg["boss_hp"]
+                    g.boss.max_hp = msg.get("boss_max_hp", g.boss.max_hp)
+                if "boss_x" in msg:
+                    g.boss.x = msg["boss_x"]
+                    g.boss.y = msg.get("boss_y", g.boss.y)
+            # rebuild remote_players from snapshot (skip self)
+            for p in msg.get("players", []):
+                pid = p.get("pid")
+                if pid and pid != g.mp_pid:
+                    rp = _get_or_create_remote(g, pid, p)
+                    if rp:
+                        rp.x      = p.get("x", rp.x)
+                        rp.y      = p.get("y", rp.y)
+                        rp.hp     = p.get("hp", rp.hp)
+                        rp.max_hp = p.get("max_hp", rp.max_hp)
+                        rp.status = p.get("status", rp.status)
+                        if p.get("symbol"): rp.symbol = p["symbol"]
+                        if p.get("cls_name"): rp.cls_name = p["cls_name"]
+
+        elif t == "DOWNED":
+            pid = msg.get("pid")
+            if not pid: pass
+            elif pid == g.mp_pid:
+                g.mp_status    = 'downed'
+                g.mp_downed_at = now
+                g.add_msg("You were downed!", 1.5, g.mw//2, g.mh//2-3, (255,80,80))
+            else:
+                rp = net.remote_players.get(pid)
+                if rp:
+                    sym = rp.symbol if isinstance(rp, RemotePlayer) else rp.get('symbol','?')
+                    if isinstance(rp, RemotePlayer): rp.status = 'downed'
+                    elif isinstance(rp, dict): rp['status'] = 'downed'
+                    g.add_msg(f"{sym} was downed!", 1.5, g.mw//2, g.mh//2-3, (255,120,80))
+
+        elif t == "SPECTATE":
+            pid = msg.get("pid")
+            if pid == g.mp_pid:
+                g.mp_status = 'spectate'
+            else:
+                rp = net.remote_players.get(pid)
+                if rp:
+                    if isinstance(rp, RemotePlayer): rp.status = 'spectate'
+                    elif isinstance(rp, dict): rp['status'] = 'spectate'
+
+        elif t == "REVIVE_START":
+            pid = msg.get("pid"); by_pid = msg.get("by_pid")
+            if pid == g.mp_pid:
+                g.mp_revive_progress = (by_pid, now)
+                g.add_msg("Being revived!", 1.0, g.mw//2, g.mh//2-1, (100,255,100))
+            else:
+                rp = net.remote_players.get(pid)
+                if rp:
+                    sym = rp.symbol if isinstance(rp, RemotePlayer) else rp.get('symbol','?')
+                    g.add_msg(f"Reviving {sym}...", 1.0, g.mw//2, g.mh//2-3, (100,255,100))
+
+        elif t == "REVIVE_DONE":
+            pid = msg.get("pid"); hp = msg.get("hp", 30)
+            if pid == g.mp_pid:
+                g.mp_status      = 'alive'
+                g.mp_downed_at   = None
+                g.mp_revive_progress = None
+                g.hp             = hp
+                g.add_msg("REVIVED!", 1.5, g.mw//2, g.mh//2, (100,255,100))
+            else:
+                rp = net.remote_players.get(pid)
+                if rp:
+                    if isinstance(rp, RemotePlayer): rp.status='alive'; rp.hp=hp
+                    elif isinstance(rp, dict): rp['status']='alive'; rp['hp']=hp
+
+        elif t == "REVIVE_FAIL":
+            pid = msg.get("pid")
+            if pid == g.mp_pid:
+                g.mp_status = 'spectate'
+                g.add_msg("You are now spectating.", 2.0, g.mw//2, g.mh//2, (150,150,180))
+
+        elif t == "PLAYER_JOIN":
+            pid = msg.get("pid")
+            if pid and pid != g.mp_pid:
+                rp = _get_or_create_remote(g, pid, msg)
+                if rp and msg.get("cls_name"):
+                    rp.cls_name = msg["cls_name"]
+
+        elif t == "PLAYER_DROP":
+            pid = msg.get("pid")
+            rp  = net.remote_players.get(pid)
+            if rp:
+                if isinstance(rp, RemotePlayer): rp.status = 'spectate'
+                elif isinstance(rp, dict): rp['status'] = 'spectate'
+            sym = '?'
+            if rp:
+                sym = rp.symbol if isinstance(rp, RemotePlayer) else rp.get('symbol','?')
+            g.add_msg(f"{sym} disconnected", 2.0, g.mw//2, g.mh//2-3, (180,100,100))
+
+        elif t == "GAME_OVER":
+            reason = msg.get("reason","")
+            if reason == "victory":
+                g.victory = True
+                coins = msg.get("coins", 0)
+                g.earned_coins = coins
+            else:
+                g.game_over = True
+
+        elif t == "HOST_GONE":
+            g.add_msg("Host disconnected!", 3.0, g.mw//2, g.mh//2-2, (255,80,80))
+
+        elif t == "GAME_START":
+            # client received game start mid-session (shouldn't normally happen,
+            # but handle gracefully by seeding remote_players from the player list)
+            for p in msg.get("players", []):
+                pid2 = p.get("pid")
+                if pid2 and pid2 != g.mp_pid:
+                    rp = _get_or_create_remote(g, pid2, p)
+                    if rp:
+                        rp.hp = p.get("hp", rp.hp)
+                        rp.max_hp = p.get("max_hp", rp.max_hp)
+
+    # ── downed / revival / spectate logic ────────────────────────────────────
+    _process_mp_downed(g, now)
+
+    # ── outbound (host broadcasts state every frame / 2s) ────────────────────
+    if g.mp_is_host and net.host:
+        # boss state: broadcast every 0.05s (20 Hz) for smooth remote rendering
+        if now - g._last_boss_state_send >= 0.05:
+            g._last_boss_state_send = now
+            if g.boss.alive:
+                net.host.broadcast_boss_state(
+                    g.boss.x, g.boss.y, g.boss.hp,
+                    g.boss.stun_until, g.boss.flash_until
+                )
+        # full sync: every 2s as safety net
+        if now - g._last_full_sync >= 2.0:
+            g._last_full_sync = now
+            net.host.update_host_state(g.px, g.py, g.hp, g.max_hp)
+            net.host.broadcast_sync(g.boss.x, g.boss.y, g.boss.hp, g.boss.max_hp)
+    elif not g.mp_is_host and net.client:
+        # client: send position every frame, ping every 5s
+        net.client.send_move(g.px, g.py)
+        net.tick_ping()
+
+
+def _get_or_create_remote(g, pid, msg):
+    """fetch or create a RemotePlayer for pid in net.remote_players.
+    returns None if pid is the local player (should never be in remote list).
+    on host: enriches symbol/cls_name from slot data when message lacks them.
+    """
+    if not pid or pid == g.mp_pid:
+        return None   # never add self to remote_players
+    if pid not in g.net.remote_players:
+        # try to get symbol/cls from host slot first (more reliable than msg)
+        sym = "?"; cls = "wizard"
+        if g.mp_is_host and g.net.host:
+            slot = g.net.host.get_slot(pid)
+            if slot:
+                sym = slot.symbol or "?"
+                cls = slot.cls_name or "wizard"
+        if sym == "?" and isinstance(msg, dict):
+            sym = msg.get("symbol", "?")
+            cls = msg.get("cls_name", cls)
+        g.net.remote_players[pid] = RemotePlayer(pid, sym, cls)
+    rp = g.net.remote_players[pid]
+    # upgrade dict entries to RemotePlayer if needed
+    if isinstance(rp, dict):
+        new_rp = RemotePlayer(pid, rp.get("symbol","?"), rp.get("cls_name","wizard"))
+        new_rp.x = rp.get("x",0); new_rp.y = rp.get("y",0)
+        new_rp.hp = rp.get("hp",100); new_rp.max_hp = rp.get("max_hp",100)
+        new_rp.status = rp.get("status","alive")
+        g.net.remote_players[pid] = new_rp
+        rp = new_rp
+    return rp
+
+
+def _process_mp_downed(g, now):
+    """
+    handles the downed → spectate timer and revival proximity check.
+    called every frame from process_network.
+    """
+    revival_secs = getattr(g, '_revival_time', 6.0)
+
+    # local player downed
+    if g.mp_status == 'downed' and g.mp_downed_at:
+        elapsed = now - g.mp_downed_at
+
+        # check if any alive remote player is close enough to revive
+        if g.net:
+            for pid, rp in list(g.net.remote_players.items()):
+                status = rp.status if isinstance(rp, RemotePlayer) else rp.get('status','')
+                if status != 'alive':
+                    continue
+                rx = rp.x if isinstance(rp, RemotePlayer) else rp.get('x',0)
+                ry = rp.y if isinstance(rp, RemotePlayer) else rp.get('y',0)
+                if math.hypot(g.px - rx, g.py - ry) < 2.5:
+                    # being revived
+                    if g.mp_revive_progress is None:
+                        g.mp_revive_progress = (pid, now)
+                        if g.net.client:
+                            g.net.client.send({"t":"REVIVE_START","pid":g.mp_pid,"by_pid":pid})
+                    else:
+                        rev_pid, rev_start = g.mp_revive_progress
+                        if now - rev_start >= revival_secs:
+                            # fully revived
+                            g.mp_status    = 'alive'
+                            g.mp_downed_at = None
+                            g.mp_revive_progress = None
+                            g.hp = max(1, int(g.max_hp * 0.3))
+                            g.add_msg("REVIVED!", 1.5, g.mw//2, g.mh//2, (100,255,100))
+                            if g.net.client:
+                                g.net.client.send({"t":"REVIVE_DONE","pid":g.mp_pid,"hp":g.hp})
+                    break
+            else:
+                # no one nearby — cancel any in-progress revive
+                if g.mp_revive_progress:
+                    g.mp_revive_progress = None
+
+        # downed timer expires → become spectator
+        if elapsed >= 15.0 and g.mp_status == 'downed':
+            g.mp_status = 'spectate'
+            if g.net and g.net.client:
+                g.net.client.send({"t":"SPECTATE","pid":g.mp_pid})
+            g.add_msg("You are now spectating.", 2.0, g.mw//2, g.mh//2, (150,150,180))
+
+    # host: manage revival timers for remote players
+    if g.mp_is_host and g.net and g.net.host:
+        revival_secs_h = getattr(g, '_revival_time', 6.0)
+        with g.net.host._lock:
+            for slot in g.net.host.slots:
+                if slot.status != 'downed' or not slot.downed_at:
+                    continue
+                elapsed_s = now - slot.downed_at
+                # check if host player is reviving them
+                hx, hy = g.px, g.py
+                rx = slot.x; ry = slot.y
+                if math.hypot(hx - rx, hy - ry) < 2.5 and g.mp_status == 'alive':
+                    if slot.revive_by is None:
+                        slot.revive_by = g.mp_pid
+                        g.net.host.notify_revive_start(slot.pid, g.mp_pid)
+                    else:
+                        # check if revive time elapsed (crude: use downed_at + 15 as fallback)
+                        pass  # full revive handled by host game loop watching elapsed time
+                # timer: 15s downed → spectate
+                if elapsed_s >= 15.0:
+                    slot.status = 'spectate'
+                    slot.downed_at = None
+                    g.net.host.notify_spectate(slot.pid)
+                    g.net.host.notify_revive_fail(slot.pid)
+
+    # check if ALL players (local + remote) are spectating/dead → true game over
+    if g.net and g.mp_player_count > 1 and not g.game_over:
+        local_dead = g.mp_status in ('spectate',) and g.hp <= 0
+        all_remote_dead = all(
+            (rp.status if isinstance(rp, RemotePlayer) else rp.get('status','')) in ('spectate',)
+            for rp in g.net.remote_players.values()
+        )
+        if local_dead and all_remote_dead and g.net.remote_players:
+            g.game_over = True
+            if g.mp_is_host and g.net.host:
+                g.net.host.send_game_over("all_dead")
+
 
 # render
 def render_game(g, out_buf):
@@ -3042,6 +3591,8 @@ def render_game(g, out_buf):
                     buf[(x,y)]=(ch2,lerp(fc,(avg,avg,avg),intensity*0.7),bc)
 
     # player — char and color reflect current state
+    # use mp_symbol so multiplayer players show their assigned symbol
+    _local_sym = g.mp_symbol if g.net else '@'
     px2,py2=int(g.px),int(g.py)
     # damage flash: briefly turns the player @ red-white on taking a hit
     dmg_flash_active = hasattr(g,'_dmg_flash_until') and now < g._dmg_flash_until
@@ -3055,25 +3606,63 @@ def render_game(g, out_buf):
         put(px2,py2,dash_ch,lerp(CLASS_DATA[g.cls_name]["color"],(200,220,255),1-t_d))
     elif dmg_flash_active:
         t_df=(g._dmg_flash_until-now)/0.3
-        put(px2,py2,'@',lerp((60,10,10),(255,80,80),t_df))
+        put(px2,py2,_local_sym,lerp((60,10,10),(255,80,80),t_df))
     elif now<g.gd_invincible_until:
         flash=abs(math.sin(now*20))
-        put(px2,py2,'@',lerp((200,150,0),(255,255,100),flash))
+        put(px2,py2,_local_sym,lerp((200,150,0),(255,255,100),flash))
     elif g.ult_active:
         # pulse in class color during ult
         t_u=(math.sin(now*5)+1)/2
-        put(px2,py2,'@',lerp(CLASS_DATA[g.cls_name]["color"],(255,255,255),t_u*0.6))
+        put(px2,py2,_local_sym,lerp(CLASS_DATA[g.cls_name]["color"],(255,255,255),t_u*0.6))
     elif g.rev_ult_active:
-        t=(math.sin(now*8)+1)/2; put(px2,py2,'@',lerp((200,30,30),(255,120,50),t))
-    elif g.is_stunned(): put(px2,py2,'@',(150,150,255))
-    elif g.bone_shield_active: put(px2,py2,'@',(100,180,255))
+        t=(math.sin(now*8)+1)/2; put(px2,py2,_local_sym,lerp((200,30,30),(255,120,50),t))
+    elif g.is_stunned(): put(px2,py2,_local_sym,(150,150,255))
+    elif g.bone_shield_active: put(px2,py2,_local_sym,(100,180,255))
     elif g.hp <= g.max_hp * 0.3:
         # danger zone: slow dim flicker in deep red
         t_danger=(math.sin(now*2.5)+1)/2
-        put(px2,py2,'@',lerp((100,10,10),(200,40,40),t_danger))
+        put(px2,py2,_local_sym,lerp((100,10,10),(200,40,40),t_danger))
     else:
         clr=CLASS_DATA[g.cls_name]["color"]
-        put(px2,py2,'@',lerp(clr,(200,255,200),0.3))
+        put(px2,py2,_local_sym,lerp(clr,(200,255,200),0.3))
+
+    # remote players (multiplayer) — draw each with their symbol and a small hp bar
+    if g.net:
+        for pid, rp in g.net.remote_players.items():
+            if isinstance(rp, dict):
+                rx=int(rp.get('x',0)); ry=int(rp.get('y',0))
+                rsym=rp.get('symbol','?'); rstatus=rp.get('status','alive')
+                rhp=rp.get('hp',100); rmx=rp.get('max_hp',100)
+            else:
+                rx=int(rp.x); ry=int(rp.y)
+                rsym=rp.symbol; rstatus=rp.status
+                rhp=rp.hp; rmx=rp.max_hp
+            if not (0<rx<mw-1 and 0<ry<mh-1):
+                continue
+            rc = {
+                '@':(120,200,120),'$':(100,160,220),
+                '%':(220,140,40),'&':(200,80,180)
+            }.get(rsym,(180,180,180))
+            if rstatus == 'downed':
+                # downed: dim pulse
+                t_d=(math.sin(now*3)*0.5+0.5)
+                rc=lerp((60,20,20),(180,60,60),t_d)
+                put(rx,ry,'x',rc)
+            elif rstatus == 'spectate':
+                # spectators: faint ghost
+                put(rx,ry,rsym,lerp(rc,(30,30,40),0.75))
+            else:
+                put(rx,ry,rsym,rc)
+            # small hp bar above remote player
+            if rstatus == 'alive' and rmx > 0:
+                bar_len = 5
+                filled = max(0, int(bar_len * rhp / rmx))
+                hp_clr_r = lerp((200,40,40),(40,200,80), rhp/rmx)
+                hp_bar = "█"*filled + "░"*(bar_len-filled)
+                bx_r = max(0, rx - bar_len//2)
+                if 0<=bx_r<mw-bar_len and ry-1>=0:
+                    for bi, bch in enumerate(hp_bar):
+                        put(bx_r+bi, ry-1, bch, hp_clr_r)
 
     # revenant: burning trail on last life
     if g.cls_name=="revenant" and g.lives==1:
@@ -3275,6 +3864,50 @@ def render_game(g, out_buf):
             sy=offset_y+my2; sx=offset_x+mx2-len(text)//2
             if 0<=sy<th and 0<=sx<tw:
                 out+=at(sx,sy)+fg(*c)+BOLD+text+RST
+
+    # spectate overlay: dim banner across top row when local player is spectating
+    if g.mp_status == 'spectate' and g.net:
+        spec_str = "  SPECTATING  —  ESC to leave  "
+        t_sp = (math.sin(now2*1.5)*0.5+0.5)
+        sc_clr = lerp((60,60,100),(120,120,180),t_sp)
+        out += at(offset_x, 0) + fg(*sc_clr) + BOLD + spec_str + RST
+
+    # downed overlay: show revive timer bar
+    if g.mp_status == 'downed' and g.mp_downed_at:
+        elapsed_d = now2 - g.mp_downed_at
+        remain    = max(0.0, 15.0 - elapsed_d)
+        bar_len   = 20
+        bar_fill  = int(bar_len * remain / 15.0)
+        bar_str   = "█"*bar_fill + "░"*(bar_len-bar_fill)
+        t_pulse   = (math.sin(now2*4)*0.5+0.5)
+        dc        = lerp((180,40,40),(255,100,100),t_pulse)
+        out += at(offset_x+mw//2-15, offset_y+mh//2-1) + fg(*dc) + BOLD + "DOWNED" + RST
+        out += at(offset_x+mw//2-bar_len//2, offset_y+mh//2) + fg(*dc) + bar_str + RST
+        if g.mp_revive_progress:
+            rev_pid, rev_start = g.mp_revive_progress
+            rev_elapsed = now2 - rev_start
+            rev_time    = getattr(g,'_revival_time',6.0)
+            rev_fill    = int(bar_len * min(1.0, rev_elapsed/rev_time))
+            rev_bar     = "█"*rev_fill + "░"*(bar_len-rev_fill)
+            out += at(offset_x+mw//2-bar_len//2, offset_y+mh//2+1) + fg(100,255,100) + rev_bar + RST
+            out += at(offset_x+mw//2-5, offset_y+mh//2+2) + fg(100,200,100) + "REVIVING..." + RST
+
+    # multiplayer player list HUD (top-right corner, small)
+    if g.net and g.mp_player_count > 1:
+        py_offset = 0
+        for pid, rp in g.net.remote_players.items():
+            if isinstance(rp, dict):
+                rsym=rp.get('symbol','?'); rstatus=rp.get('status','alive')
+                rhp=rp.get('hp',0); rmx=rp.get('max_hp',100)
+            else:
+                rsym=rp.symbol; rstatus=rp.status; rhp=rp.hp; rmx=rp.max_hp
+            rc = {'@':(120,200,120),'$':(100,160,220),'%':(220,140,40),'&':(200,80,180)}.get(rsym,(180,180,180))
+            if rstatus == 'downed': rc=(200,60,60)
+            if rstatus == 'spectate': rc=(80,80,100)
+            bar3 = "█"*max(0,int(5*rhp/max(1,rmx)))+"░"*(5-max(0,int(5*rhp/max(1,rmx))))
+            mp_line = f"{rsym} {bar3} {rstatus[:3].upper()}"
+            out += at(offset_x+mw-len(mp_line)-1, py_offset) + fg(*rc) + mp_line + RST
+            py_offset += 1
 
     # game over / victory — animated overlays
     if g.game_over:

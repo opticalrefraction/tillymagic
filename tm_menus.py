@@ -916,9 +916,59 @@ def menu_store(inp, save):
         time.sleep(0.033)
 
 
+def menu_play_mode(inp):
+    """
+    shown when player presses Play on the main menu.
+    returns 'singleplayer' | 'multiplayer' | None.
+    """
+    options = ["Singleplayer", "Multiplayer", "Back"]
+    sel = 0
+    particles = make_particles(25, *get_term_size())
+    last = time.time()
+
+    while True:
+        now  = time.time()
+        dt   = now - last; last = now
+        tw, th = get_term_size()
+        tick_particles(particles, dt, tw, th)
+
+        inp.read(); keys = inp.get_single()
+        for k in keys:
+            if k == 'w': sel = (sel-1) % len(options)
+            if k == 's': sel = (sel+1) % len(options)
+            if k in (' ', '\r', '\n'):
+                choice = options[sel]
+                if choice == "Back":         return None
+                if choice == "Singleplayer": return 'singleplayer'
+                if choice == "Multiplayer":  return 'multiplayer'
+            if k in ('\x03', '\x1b'): return None
+
+        out = CLR + HIDE
+        out += draw_particles(particles, tw, th)
+        out += animated_title(now, th//2-7)
+        out += center_text("── SELECT MODE ──", th//2-5, (120,60,180))
+
+        colors = [(160,80,220),(100,160,220),(60,60,80)]
+        for i, opt in enumerate(options):
+            y = th//2 - 2 + i*2
+            out += shimmer_bar(f"  {opt}  ", y,
+                               colors[i], lerp(colors[i],(50,50,65),0.65),
+                               i==sel)
+
+        out += center_text("W/S: navigate   SPACE: select   ESC: back", th-2, (70,70,90))
+        write(out)
+        time.sleep(0.033)
+
+
 def menu_main(inp, save):
-    """Main menu. Returns ('play', cls, boss, map_key, size_mult) or None."""
-    options = ["Play","Store","Tips","Quit"]
+    """
+    Main menu.
+    returns one of:
+      ('singleplayer', cls, boss, map_key, size_mult, size_coin_mult)
+      ('multiplayer',  mode)   where mode = 'host' | 'join'
+      None  — quit
+    """
+    options = ["Play", "Store", "Tips", "Quit"]
     sel = 0
     particles = make_particles(40, *get_term_size())
     last = time.time()
@@ -932,49 +982,54 @@ def menu_main(inp, save):
         inp.read()
         keys = inp.get_single()
         for k in keys:
-            if k=='w': sel=(sel-1)%len(options)
-            if k=='s': sel=(sel+1)%len(options)
-            if k in (' ','\r','\n'):
+            if k == 'w': sel = (sel-1) % len(options)
+            if k == 's': sel = (sel+1) % len(options)
+            if k in (' ', '\r', '\n'):
                 choice = options[sel]
-                if choice=="Quit": return None
-                if choice=="Tips":
-                    menu_tips(inp); break
-                if choice=="Store":
-                    menu_store(inp,save); break
-                if choice=="Play":
-                    cls = menu_class_select(inp)
-                    if cls is None: break
-                    boss = menu_boss_select(inp)
-                    if boss is None: break
-                    map_key = menu_map_select(inp)
-                    if map_key is None: break
-                    size, size_coin_mult = menu_size_select(inp, map_key)
-                    if size is None: break
-                    return ('play', cls, boss, map_key, size, size_coin_mult)
-            if k in ('\x03','\x1b'): return None
+                if choice == "Quit":  return None
+                if choice == "Tips":  menu_tips(inp);        break
+                if choice == "Store": menu_store(inp, save); break
+                if choice == "Play":
+                    mode = menu_play_mode(inp)
+                    if mode is None: break
 
-        out = CLR+HIDE
+                    if mode == 'singleplayer':
+                        cls = menu_class_select(inp)
+                        if cls is None: break
+                        boss = menu_boss_select(inp)
+                        if boss is None: break
+                        map_key = menu_map_select(inp)
+                        if map_key is None: break
+                        size, size_coin_mult = menu_size_select(inp, map_key)
+                        if size is None: break
+                        return ('singleplayer', cls, boss, map_key, size, size_coin_mult)
+
+                    if mode == 'multiplayer':
+                        # delegate to lobby — import here to avoid circular dep
+                        from tm_lobby import menu_multiplayer_root
+                        mp_choice = menu_multiplayer_root(inp)
+                        if mp_choice is None: break
+                        return ('multiplayer', mp_choice)
+
+            if k in ('\x03', '\x1b'): return None
+
+        out = CLR + HIDE
         out += draw_particles(particles, tw, th)
-
-        # Big animated title
         out += animated_title(now, th//2-6)
 
         subtitle = "A real-time ASCII dungeon brawler"
         out += center_text(subtitle, th//2-4, (100,70,140))
 
-        # Coin display
         coin_str = f"✦  {save['coins']} coins"
         out += center_text(coin_str, th//2-2, (200,170,50))
 
-        # Menu items
         item_colors = [(160,80,220),(200,160,50),(60,180,140),(180,60,60)]
-        for i,opt in enumerate(options):
+        for i, opt in enumerate(options):
             y = th//2 + i*2
             out += shimmer_bar(f"  {opt}  ", y,
                                item_colors[i], lerp(item_colors[i],(60,60,70),0.6),
                                i==sel)
 
-        # Version tag
         out += at(tw-18, th-1)+fg(50,50,60)+"TillyMagic v2.0"+RST
         write(out)
         time.sleep(0.033)
