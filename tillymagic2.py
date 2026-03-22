@@ -4,6 +4,7 @@ import sys, time
 from tm_core import *
 from tm_menus import menu_main
 from tm_game  import Game, process_input, update_game, render_game
+from tm_updater import check_for_update
 
 
 # ── singleplayer game loop ────────────────────────────────────────────────────
@@ -259,6 +260,17 @@ def run_multiplayer_client(inp, save):
 def main():
     inp = Input()
     try:
+        # ── update check (runs before menu, silently skips on no network) ────
+        try:
+            updated = check_for_update(inp)
+            if updated:
+                sys.stdout.write(SHOW + RST + CLR)
+                sys.stdout.flush()
+                print("Update installed. Please restart TillyMagic.")
+                return
+        except Exception:
+            pass   # never let updater crash the game
+
         save = load_save()
 
         while True:
