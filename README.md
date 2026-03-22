@@ -18,8 +18,11 @@ cd tillymagic
 # run main script
 python3 tillymagic2.py
 ```
+
+game updates automatically!
+
 like the game? leave a star! :star:
 ## extra notes
 any recommendations or bug reports can go to the issues tab. make sure to search for your issue before creating one. please tag them appropriately when doing so! 
 
-this repository will be updated frequently--I will plan on integrating an update checker in code.
+the game will update frequently, but only versions where it is absolutely major to update, will the game ask you to update. otherwise, if you’re looking for the *freshest* releases, then you can clone this repo every commit--not very wise, but...
