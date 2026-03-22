@@ -109,7 +109,7 @@ _shimmer_on   = False           # toggled randomly
 _shimmer_next = time.time() + random.uniform(4, 10)
 
 
-def render_motd(now: float) -> str:
+def render_motd_at(now: float, top_row: int = 1) -> str:
     """
     Build and return the ANSI string for the MOTD block.
     Returns "" if the MOTD isn't ready or is empty.
@@ -127,28 +127,21 @@ def render_motd(now: float) -> str:
 
     tw, th = get_term_size()
 
-    # compute inner width: enough to fit the longest word-wrapped line
-    # but clamped to [MIN_W, MAX_W] and also to terminal width minus margins
+    # compute inner width to fit longest wrapped line
     max_avail = min(MAX_W, tw - 6)
     test_lines = _wrap_text(raw, max_avail)
     inner_w    = max(MIN_W, max(len(l) for l in test_lines) if test_lines else MIN_W)
     inner_w    = min(inner_w, max_avail)
     lines      = _wrap_text(raw, inner_w)
-    # pad to INNER_H
     while len(lines) < INNER_H:
         lines.append("")
 
-    box_w = inner_w + 2   # including ║ on each side
+    box_w = inner_w + 2
+    bx    = max(1, (tw - box_w) // 2)
+    # top_row is where the MOTD: label goes; box starts one row below
+    by    = top_row + 1
 
-    # centre the box horizontally
-    bx = max(1, (tw - box_w) // 2)
-
-    # position: just above the menu items block
-    # menu items start at th//2; box is BOX_H tall; label is 1 row above
-    # so top of box = th//2 - BOX_H - 2  (leave 1 gap between box and menu)
-    by = th // 2 - BOX_H - 2
-
-    if by < 2:
+    if by + BOX_H >= th - 1:
         return ""   # no room
 
     # ── shimmer ticker ────────────────────────────────────────────────────────
@@ -175,7 +168,7 @@ def render_motd(now: float) -> str:
     label_x = bx
     t_label = (math.sin(now * 1.4) * 0.5 + 0.5)
     label_c = lerp(color, (255, 255, 255), t_label * 0.35)
-    out += at(label_x, by - 1) + fg(*label_c) + BOLD + "MOTD:" + RST
+    out += at(label_x, top_row) + fg(*label_c) + BOLD + "MOTD:" + RST
 
     # top border  ╔═══...═══╗
     out += at(bx, by) + fg(*bc) + "╔" + "═" * inner_w + "╗" + RST
@@ -210,3 +203,7 @@ def render_motd(now: float) -> str:
     out += at(bx, by + 1 + INNER_H) + fg(*bc) + "╚" + "═" * inner_w + "╝" + RST
 
     return out
+
+# backwards-compat alias
+def render_motd(now: float) -> str:
+    return render_motd_at(now, 1)

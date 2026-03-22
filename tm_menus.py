@@ -1,6 +1,6 @@
 """TillyMagic menus."""
 from tm_core import *
-from tm_motd import render_motd
+from tm_motd import render_motd_at
 
 # ── Drawing helpers ────────────────────────────────────────────────────────────
 def clear_screen():
@@ -1016,19 +1016,29 @@ def menu_main(inp, save):
 
         out = CLR + HIDE
         out += draw_particles(particles, tw, th)
-        out += animated_title(now, th//2-6)
+
+        # MOTD sits at the very top — 10 rows box + 1 label = 11 rows (rows 1-11)
+        out += render_motd_at(now, 1)
+
+        # centre title+menu in the space below the MOTD (rows 12..th-2)
+        motd_bottom = 12          # first free row after MOTD box
+        avail       = th - 2 - motd_bottom   # rows available
+        # content height: title(1) gap(1) subtitle(1) gap(1) coins(1) gap(1)
+        #                 + 4 items × 2 rows = 8  → total 14 rows
+        content_h   = 14
+        title_row   = motd_bottom + max(0, (avail - content_h) // 2 - 5)
+
+        out += animated_title(now, title_row)
 
         subtitle = "A real-time ASCII dungeon brawler"
-        out += center_text(subtitle, th//2-4, (100,70,140))
+        out += center_text(subtitle, title_row+2, (100,70,140))
 
         coin_str = f"✦  {save['coins']} coins"
-        out += center_text(coin_str, th//2-2, (200,170,50))
-
-        out += render_motd(now)
+        out += center_text(coin_str, title_row+4, (200,170,50))
 
         item_colors = [(160,80,220),(200,160,50),(60,180,140),(180,60,60)]
         for i, opt in enumerate(options):
-            y = th//2 + i*2
+            y = title_row + 6 + i*2
             out += shimmer_bar(f"  {opt}  ", y,
                                item_colors[i], lerp(item_colors[i],(60,60,70),0.6),
                                i==sel)
