@@ -1,5 +1,6 @@
 """TillyMagic menus."""
 from tm_core import *
+from tm_motd import render_motd
 
 # ── Drawing helpers ────────────────────────────────────────────────────────────
 def clear_screen():
@@ -1022,6 +1023,8 @@ def menu_main(inp, save):
 
         coin_str = f"✦  {save['coins']} coins"
         out += center_text(coin_str, th//2-2, (200,170,50))
+
+        out += render_motd(now)
 
         item_colors = [(160,80,220),(200,160,50),(60,180,140),(180,60,60)]
         for i, opt in enumerate(options):

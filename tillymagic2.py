@@ -5,6 +5,7 @@ from tm_core import *
 from tm_menus import menu_main
 from tm_game  import Game, process_input, update_game, render_game
 from tm_updater import check_for_update
+from tm_motd import start_motd_fetch
 
 
 # ── singleplayer game loop ────────────────────────────────────────────────────
@@ -272,6 +273,7 @@ def main():
             pass   # never let updater crash the game
 
         save = load_save()
+        start_motd_fetch()   # kick off background MOTD fetch
 
         while True:
             result = menu_main(inp, save)
