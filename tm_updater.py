@@ -170,74 +170,128 @@ def _do_update(state: _ProgressState):
     """Runs in a background thread. Downloads and installs the update."""
     tmp_dir = None
     try:
-        # ── step 1: download zip ──────────────────────────────────────────────
-        state.set("Downloading update...", REMOTE_ZIP_URL, 0)
         tmp_dir = tempfile.mkdtemp(prefix="tillymagic_update_")
         zip_path = os.path.join(tmp_dir, "update.zip")
 
-        def _reporthook(block_num, block_size, total_size):
-            if total_size > 0:
-                pct = min(100, int(block_num * block_size * 100 / total_size))
-                state.set("Downloading update...", f"{pct}%", pct)
-
+        # ── step 1: download via urllib with redirect following ───────────────
+        state.set("Downloading update...", REMOTE_ZIP_URL, 0)
         try:
-            urllib.request.urlretrieve(REMOTE_ZIP_URL, zip_path, _reporthook)
+            req = urllib.request.Request(
+                REMOTE_ZIP_URL,
+                headers={"User-Agent": "TillyMagic-Updater/1.0"}
+            )
+            with urllib.request.urlopen(req, timeout=60) as resp:
+                total = int(resp.headers.get("Content-Length", 0))
+                downloaded = 0
+                chunk_size = 65536
+                with open(zip_path, "wb") as f:
+                    while True:
+                        chunk = resp.read(chunk_size)
+                        if not chunk:
+                            break
+                        f.write(chunk)
+                        downloaded += len(chunk)
+                        if total > 0:
+                            pct = min(99, int(downloaded * 100 / total))
+                            state.set("Downloading update...",
+                                      f"{downloaded//1024} / {total//1024} KB", pct)
+                        else:
+                            state.set("Downloading update...",
+                                      f"{downloaded//1024} KB", -1)
         except Exception as e:
             state.fail(f"Download failed: {e}")
             return
 
-        # ── step 2: extract ───────────────────────────────────────────────────
-        state.set("Extracting archive...", zip_path, -1)
+        if not os.path.exists(zip_path) or os.path.getsize(zip_path) < 1000:
+            state.fail("Downloaded file is missing or too small — network error?")
+            return
+
+        # ── step 2: verify and extract ────────────────────────────────────────
+        state.set("Extracting archive...", "", -1)
         extract_dir = os.path.join(tmp_dir, "extracted")
         os.makedirs(extract_dir, exist_ok=True)
         try:
             with zipfile.ZipFile(zip_path, 'r') as zf:
+                bad = zf.testzip()
+                if bad:
+                    state.fail(f"Zip file is corrupt (first bad file: {bad})")
+                    return
                 zf.extractall(extract_dir)
+        except zipfile.BadZipFile as e:
+            state.fail(f"Extraction failed — bad zip: {e}")
+            return
         except Exception as e:
             state.fail(f"Extraction failed: {e}")
             return
 
-        # ── step 3: find the extracted game folder ────────────────────────────
+        # ── step 3: locate game folder (GitHub unpacks to repo-branch/) ───────
         state.set("Locating game files...", "", -1)
-        # GitHub zips unpack to "tillymagic-master/"
-        contents = os.listdir(extract_dir)
-        if not contents:
-            state.fail("Zip was empty after extraction.")
+        # find the first directory in the extract root
+        src_dir = None
+        for entry in os.listdir(extract_dir):
+            candidate = os.path.join(extract_dir, entry)
+            if os.path.isdir(candidate):
+                src_dir = candidate
+                break
+        if src_dir is None:
+            state.fail("Could not find game folder inside zip.")
             return
-        src_dir = os.path.join(extract_dir, contents[0])
-        if not os.path.isdir(src_dir):
-            state.fail(f"Unexpected zip structure: {contents[0]}")
+        # sanity check: should contain tillymagic2.py or tm_core.py
+        marker_files = {"tillymagic2.py", "tm_core.py", "tm_game.py"}
+        found = set(os.listdir(src_dir))
+        if not marker_files.intersection(found):
+            state.fail(
+                f"Unexpected zip contents (no game files found in {os.path.basename(src_dir)}). "
+                f"Got: {', '.join(sorted(found)[:6])}"
+            )
             return
 
         # ── step 4: copy files, skipping protected ────────────────────────────
-        state.set("Installing files...", "", -1)
+        state.set("Collecting file list...", "", -1)
         all_files = []
         for root, dirs, files in os.walk(src_dir):
-            # skip hidden dirs like .git
             dirs[:] = [d for d in dirs if not d.startswith('.')]
-            for f in files:
-                all_files.append(os.path.join(root, f))
+            for fname in files:
+                all_files.append(os.path.join(root, fname))
 
+        state.set("Installing files...", "", 0)
         for i, src_file in enumerate(all_files):
             rel     = os.path.relpath(src_file, src_dir)
             dst     = GAME_DIR / rel
             dst_abs = dst.resolve()
 
-            # never overwrite protected files
-            if dst_abs in PROTECTED or dst_abs == SAVE_PATH:
+            # never overwrite save file or local version stamp
+            if dst_abs == SAVE_PATH.resolve():
+                continue
+            if dst_abs == LOCAL_VER_FILE.resolve():
+                # update ver.txt LAST — only if everything else succeeded
+                continue
+            # skip hidden files (.gitignore etc.)
+            if any(part.startswith('.') for part in pathlib.Path(rel).parts):
                 continue
 
             pct = int(i * 100 / max(1, len(all_files)))
             state.set("Installing files...", rel, pct)
-
             dst.parent.mkdir(parents=True, exist_ok=True)
             try:
                 shutil.copy2(src_file, dst)
+            except PermissionError as e:
+                state.fail(f"Permission denied copying {rel}: {e}")
+                return
             except Exception as e:
                 state.fail(f"Failed to copy {rel}: {e}")
                 return
 
-        # ── step 5: done ──────────────────────────────────────────────────────
+        # ── step 5: update ver.txt last (marks update as complete) ───────────
+        state.set("Finalising...", "writing ver.txt", 99)
+        src_ver = os.path.join(src_dir, "ver.txt")
+        if os.path.exists(src_ver):
+            try:
+                shutil.copy2(src_ver, LOCAL_VER_FILE)
+            except Exception as e:
+                state.fail(f"Could not update ver.txt: {e}")
+                return
+
         state.set("Done!", "", 100)
         state.succeed()
 
@@ -279,7 +333,7 @@ def menu_updating(inp: Input) -> bool:
             error    = state.error
 
         if done:
-            return error is None
+            return (error is None, error or "")
 
         inp.read()
         keys = inp.get_single()
@@ -456,12 +510,11 @@ def check_for_update(inp: Input) -> bool:
         return False
 
     # 5. run update
-    success = menu_updating(inp)
+    success, err_msg = menu_updating(inp)
 
     if success:
         menu_update_success(inp, remote_ver)
-        return True   # caller should sys.exit() or prompt restart
+        return True
     else:
-        # re-read error from a fresh state — we just need a message
-        menu_update_error(inp, "See terminal output for details.")
+        menu_update_error(inp, err_msg or "Unknown error.")
         return False
